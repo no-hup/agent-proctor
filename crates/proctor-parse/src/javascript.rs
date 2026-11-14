@@ -91,16 +91,18 @@ fn walk_js_nodes(
             "call_expression" => {
                 if let Some(fn_node) = child.child_by_field_name("function") {
                     let fn_name = fn_node.utf8_text(source.as_bytes()).unwrap_or("");
-                    if fn_name == "describe" || fn_name == "context" {
+                    if fn_name == "describe" || fn_name == "context" || fn_name == "describe.skip" || fn_name == "xdescribe" {
                         let suite_name = extract_first_string_arg(child, source).unwrap_or_else(|| "describe".to_string());
                         let mut new_scope = scope.to_vec();
                         new_scope.push(suite_name);
                         if let Some(args) = child.child_by_field_name("arguments") {
                             walk_js_nodes(args, source, file_path, &new_scope, tests, harness_mocks, imports);
                         }
-                    } else if fn_name == "test" || fn_name == "it" {
+                    } else if fn_name == "test" || fn_name == "it" || fn_name == "test.skip" || fn_name == "it.skip" || fn_name == "xit" || fn_name == "xtest" || fn_name == "test.todo" || fn_name == "it.todo" {
+                        let is_skipped = fn_name.contains("skip") || fn_name.starts_with('x') || fn_name.contains("todo");
                         let test_name = extract_first_string_arg(child, source).unwrap_or_else(|| "test".to_string());
-                        let parsed_test = extract_js_test(child, source, file_path, scope, &test_name);
+                        let mut parsed_test = extract_js_test(child, source, file_path, scope, &test_name);
+                        parsed_test.is_skipped = is_skipped;
                         tests.push(parsed_test);
                     } else if let Some(mock) = extract_js_mock_call(child, source) {
                         harness_mocks.push(mock);
@@ -143,6 +145,7 @@ fn extract_js_test(
         assertions,
         mocks,
         parametrized_hashes: Vec::new(),
+        is_skipped: false,
     }
 }
 
@@ -181,6 +184,8 @@ fn parse_expect_call(call_node: Node, source: &str) -> Option<ParsedAssertion> {
 
     if text.contains(".toBe(true)") && text.contains("expect(true)") {
         strength = AssertionStrength::Vacuous;
+    } else if text.contains("expect.anything()") || text.contains("expect.any(") || text.contains("toMatchObject({})") {
+        strength = AssertionStrength::Weak;
     } else if text.contains(".toBeDefined()") || text.contains(".toBeTruthy()") || text.contains(".toBeFalsy()") {
         strength = AssertionStrength::Weak;
     } else if text.contains(".toBeNull()") || text.contains(".toBeNaN()") {
@@ -189,7 +194,7 @@ fn parse_expect_call(call_node: Node, source: &str) -> Option<ParsedAssertion> {
         strength = AssertionStrength::Exact;
         if let Some(args) = call_node.child_by_field_name("arguments") {
             let arg_txt = args.utf8_text(source.as_bytes()).unwrap_or("").trim();
-            expected_literal = Some(arg_txt.trim_matches(|c| c == '(' || c == ')' || c == '\'' || c == '"').to_string());
+            expected_literal = Some(arg_txt.trim_matches(|c| c == '(' || c == ')' || c == '\'' || c == '"' || c == '`').to_string());
         }
     }
 
@@ -236,7 +241,7 @@ fn extract_js_mock_call(node: Node, source: &str) -> Option<ParsedMock> {
     let fn_child = node.child_by_field_name("function")?;
     let fn_text = fn_child.utf8_text(source.as_bytes()).ok()?;
 
-    if fn_text == "jest.mock" || fn_text == "vi.mock" || fn_text.ends_with(".mock") {
+    if fn_text == "jest.mock" || fn_text == "vi.mock" || fn_text.ends_with(".mock") || fn_text.contains("spyOn") || fn_text.contains("doMock") {
         if let Some(target) = extract_first_string_arg(node, source) {
             return Some(ParsedMock {
                 line: node.start_position().row + 1,
@@ -285,10 +290,10 @@ fn extract_js_source_symbols(
                     }
                 }
             }
-            "string" => {
+            "string" | "number" => {
                 let txt = child.utf8_text(source.as_bytes()).unwrap_or("");
                 let trimmed = txt.trim_matches(|c| c == '\'' || c == '"' || c == '`');
-                if !trimmed.is_empty() && trimmed.len() >= 3 {
+                if !trimmed.is_empty() {
                     string_literals.push(trimmed.to_string());
                 }
             }

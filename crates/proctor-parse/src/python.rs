@@ -82,7 +82,7 @@ fn walk_python_test_nodes(
                 if let Some(name_node) = child.child_by_field_name("name") {
                     let fn_name = name_node.utf8_text(source.as_bytes()).unwrap_or("");
                     if fn_name.starts_with("test_") || fn_name.ends_with("_test") {
-                        let parsed_test = extract_python_test(child, source, file_path, scope, fn_name);
+                        let parsed_test = extract_python_test(child, source, file_path, scope, fn_name, false);
                         tests.push(parsed_test);
                     }
                 }
@@ -94,12 +94,14 @@ fn walk_python_test_nodes(
                 let mut decorator_mocks = Vec::new();
                 extract_decorator_mocks(child, source, &mut decorator_mocks);
 
+                let is_skipped = is_skip_decorated(child, source);
+
                 if let Some(def_node) = child.child_by_field_name("definition") {
                     if def_node.kind() == "function_definition" {
                         if let Some(name_node) = def_node.child_by_field_name("name") {
                             let fn_name = name_node.utf8_text(source.as_bytes()).unwrap_or("");
                             if fn_name.starts_with("test_") || fn_name.ends_with("_test") {
-                                let mut parsed_test = extract_python_test(def_node, source, file_path, scope, fn_name);
+                                let mut parsed_test = extract_python_test(def_node, source, file_path, scope, fn_name, is_skipped);
                                 parsed_test.parametrized_hashes = param_hashes;
                                 parsed_test.mocks.extend(decorator_mocks);
                                 tests.push(parsed_test);
@@ -117,12 +119,26 @@ fn walk_python_test_nodes(
     }
 }
 
+fn is_skip_decorated(node: Node, source: &str) -> bool {
+    let cursor = &mut node.walk();
+    for child in node.children(cursor) {
+        if child.kind() == "decorator" {
+            let txt = child.utf8_text(source.as_bytes()).unwrap_or("");
+            if txt.contains("skip") || txt.contains("xfail") {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 fn extract_python_test(
     fn_node: Node,
     source: &str,
     file_path: &str,
     scope: &[String],
     fn_name: &str,
+    mut is_skipped: bool,
 ) -> ParsedTest {
     let mut assertions = Vec::new();
     let mut mocks = Vec::new();
@@ -142,6 +158,10 @@ fn extract_python_test(
         body_content_hash: u64::from_le_bytes(body_hash.as_bytes()[..8].try_into().unwrap()),
     };
 
+    if body_text.contains("pytest.skip(") || body_text.contains("self.skipTest(") || body_text.contains("unittest.skip(") {
+        is_skipped = true;
+    }
+
     if let Some(body) = fn_node.child_by_field_name("body") {
         extract_assertions_and_mocks(body, source, &mut assertions, &mut mocks);
     }
@@ -151,6 +171,7 @@ fn extract_python_test(
         assertions,
         mocks,
         parametrized_hashes: Vec::new(),
+        is_skipped,
     }
 }
 
@@ -220,9 +241,16 @@ fn parse_assert_statement(assert_node: Node, source: &str) -> Option<ParsedAsser
                 } else if op_txt == "==" || op_txt == "is" {
                     strength = AssertionStrength::Exact;
                     if r.kind() == "string" || r.kind() == "integer" || r.kind() == "float" {
-                        expected_literal = Some(r_txt.to_string());
+                        let clean_lit = r_txt.trim_matches(|c| c == '\'' || c == '"').to_string();
+                        expected_literal = Some(clean_lit);
                     }
                 }
+            }
+        } else if expr.kind() == "boolean_operator" {
+            if expr_text.contains("or True") || expr_text.contains("or 1") || expr_text.ends_with("or not False") {
+                strength = AssertionStrength::Vacuous;
+            } else {
+                strength = AssertionStrength::Weak;
             }
         } else if expr.kind() == "identifier" {
             strength = AssertionStrength::Weak;
@@ -439,10 +467,10 @@ fn extract_source_symbols(
                     }
                 }
             }
-            "string" => {
+            "string" | "integer" | "float" => {
                 let txt = child.utf8_text(source.as_bytes()).unwrap_or("");
                 let trimmed = txt.trim_matches(|c| c == '\'' || c == '"');
-                if !trimmed.is_empty() && trimmed.len() >= 3 {
+                if !trimmed.is_empty() {
                     string_literals.push(trimmed.to_string());
                 }
             }

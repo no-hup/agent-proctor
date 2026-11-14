@@ -122,8 +122,8 @@ fn run_scan(
                 } else if let Ok(c) = git::get_changed_files("HEAD~1", head) {
                     c
                 } else {
-                    eprintln!("proctor: warning: unable to diff git refs: {}", e);
-                    std::process::exit(0);
+                    eprintln!("proctor: error: unable to diff git refs: {}", e);
+                    std::process::exit(1);
                 }
             } else {
                 eprintln!("proctor: error: {}", e);

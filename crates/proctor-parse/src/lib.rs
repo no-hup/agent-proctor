@@ -20,6 +20,7 @@ pub struct ParsedTest {
     pub assertions: Vec<ParsedAssertion>,
     pub mocks: Vec<ParsedMock>,
     pub parametrized_hashes: Vec<u64>,
+    pub is_skipped: bool,
 }
 
 #[derive(Debug, Clone)]

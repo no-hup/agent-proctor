@@ -12,7 +12,7 @@ pub struct ChangedFiles {
 pub fn get_changed_files(base_ref: &str, head_ref: Option<&str>) -> Result<ChangedFiles> {
     // 1. Get list of changed/added/modified/deleted files
     let mut cmd = Command::new("git");
-    cmd.arg("diff").arg("--name-only");
+    cmd.arg("diff").arg("--name-only").arg("--no-renames");
 
     if let Some(head) = head_ref {
         cmd.arg(format!("{}...{}", base_ref, head));

@@ -19,6 +19,8 @@ pub struct SemanticDiff {
     pub all_deleted_symbols: HashSet<String>,
     pub raw_base_files: HashMap<String, String>,
     pub raw_head_files: HashMap<String, String>,
+    pub base_harness_mocks: Vec<proctor_parse::ParsedMock>,
+    pub head_harness_mocks: Vec<proctor_parse::ParsedMock>,
 }
 
 impl SemanticDiff {
@@ -79,15 +81,19 @@ impl SemanticDiff {
             .collect();
 
         // 4. Two-Pass Test Pairing
-        let all_base_tests: Vec<ParsedTest> = base_tests_by_file
-            .into_values()
-            .flat_map(|f| f.tests)
-            .collect();
+        let mut all_base_tests = Vec::new();
+        let mut base_harness_mocks = Vec::new();
+        for f in base_tests_by_file.into_values() {
+            all_base_tests.extend(f.tests);
+            base_harness_mocks.extend(f.harness_mocks);
+        }
 
-        let all_head_tests: Vec<ParsedTest> = head_tests_by_file
-            .into_values()
-            .flat_map(|f| f.tests)
-            .collect();
+        let mut all_head_tests = Vec::new();
+        let mut head_harness_mocks = Vec::new();
+        for f in head_tests_by_file.into_values() {
+            all_head_tests.extend(f.tests);
+            head_harness_mocks.extend(f.harness_mocks);
+        }
 
         let mut paired_tests = Vec::new();
         let mut matched_head_indices = HashSet::new();
@@ -118,9 +124,9 @@ impl SemanticDiff {
             if !matched_base_indices.contains(&b_idx) {
                 for (h_idx, h_test) in all_head_tests.iter().enumerate() {
                     if !matched_head_indices.contains(&h_idx) {
-                        // If assertion sets have >= 75% overlap, pair them as rename/move
+                        let same_name = b_test.id.name == h_test.id.name;
                         let overlap = compute_assertion_overlap(&b_test.assertions, &h_test.assertions);
-                        if overlap >= 0.75 {
+                        if same_name || overlap >= 0.50 {
                             paired_tests.push(TestPair {
                                 base_test: b_test.clone(),
                                 head_test: h_test.clone(),
@@ -159,6 +165,8 @@ impl SemanticDiff {
             all_deleted_symbols,
             raw_base_files: base_files.clone(),
             raw_head_files: head_files.clone(),
+            base_harness_mocks,
+            head_harness_mocks,
         })
     }
 
