@@ -1,0 +1,16 @@
+[package]
+name = "proctor-rules"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Pure detection rules, assertion lattice evaluation, and CI sabotage guards for agent-proctor"
+
+[dependencies]
+proctor-core = { workspace = true }
+proctor-parse = { workspace = true }
+proctor-diff = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+blake3 = { workspace = true }
+thiserror = { workspace = true }

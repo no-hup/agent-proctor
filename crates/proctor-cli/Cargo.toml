@@ -1,0 +1,24 @@
+[package]
+name = "agent-proctor"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Deterministic PR integrity and anticheat gate for autonomous AI coding agents"
+
+[[bin]]
+name = "proctor"
+path = "src/main.rs"
+
+[dependencies]
+proctor-core = { workspace = true }
+proctor-parse = { workspace = true }
+proctor-diff = { workspace = true }
+proctor-rules = { workspace = true }
+clap = { workspace = true }
+colored = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

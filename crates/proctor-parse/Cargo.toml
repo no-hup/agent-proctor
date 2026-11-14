@@ -1,0 +1,16 @@
+[package]
+name = "proctor-parse"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Tree-sitter AST parsing, query extraction, and language bindings for agent-proctor"
+
+[dependencies]
+proctor-core = { workspace = true }
+tree-sitter = { workspace = true }
+tree-sitter-python = { workspace = true }
+tree-sitter-javascript = { workspace = true }
+tree-sitter-typescript = { workspace = true }
+blake3 = { workspace = true }
+thiserror = { workspace = true }

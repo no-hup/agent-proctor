@@ -1,0 +1,43 @@
+[workspace]
+members = [
+    "crates/proctor-core",
+    "crates/proctor-parse",
+    "crates/proctor-diff",
+    "crates/proctor-rules",
+    "crates/proctor-cli",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["Shaurya Jaiswal <shauryajaiswal.dev@gmail.com>"]
+license = "Apache-2.0"
+repository = "https://github.com/no-hup/agent-proctor"
+homepage = "https://github.com/no-hup/agent-proctor"
+description = "Deterministic PR integrity and anticheat gate for autonomous AI coding agents"
+readme = "README.md"
+keywords = ["ai-agents", "security", "code-integrity", "github-actions", "anticheat"]
+categories = ["development-tools", "command-line-utilities"]
+
+[workspace.dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "0.8"
+blake3 = "1.5"
+clap = { version = "4.5", features = ["derive", "env"] }
+tree-sitter = "0.22"
+tree-sitter-python = "0.21"
+tree-sitter-javascript = "0.21"
+tree-sitter-typescript = "0.21"
+colored = "2.1"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+anyhow = "1.0"
+thiserror = "1.0"
+
+# Internal crates
+proctor-core = { path = "crates/proctor-core" }
+proctor-parse = { path = "crates/proctor-parse" }
+proctor-diff = { path = "crates/proctor-diff" }
+proctor-rules = { path = "crates/proctor-rules" }

@@ -1,0 +1,47 @@
+# Pytest and unittest assertion specificity lattice for agent-proctor
+
+framework = "pytest"
+version = "1"
+
+[exact]
+description = "Strict contract equality, specific exception matching, or precise bounds"
+matchers = [
+    "assert ==",
+    "assertEqual",
+    "assert_equal",
+    "assert_called_with",
+    "assert_called_once_with",
+    "pytest.raises",          # with match regex or explicit error subclass
+    "assertIn",
+    "assertIs",
+    "assertCountEqual",
+    "assertDictEqual",
+    "assertListEqual",
+    "assertAlmostEqual",
+]
+
+[weak]
+description = "Existence, boolean truthiness, or loose un-parametrized bounds"
+matchers = [
+    "assert >",
+    "assert <",
+    "assert >=",
+    "assert <=",
+    "assert is not None",
+    "assertIsNotNone",
+    "assertTrue",
+    "assertFalse",
+    "assert_is_instance",
+    "isinstance",
+    "pytest.raises_generic",  # e.g. pytest.raises(Exception) with no match
+]
+
+[vacuous]
+description = "Hollow or tautological assertions that can never fail meaningfully"
+matchers = [
+    "assert True",
+    "assert 1 == 1",
+    "assert x == x",
+    "assert not False",
+    "try_swallow",            # assertion wrapped in try/except pass
+]

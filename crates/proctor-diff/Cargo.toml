@@ -1,0 +1,14 @@
+[package]
+name = "proctor-diff"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Git change-set extraction, two-pass test pairing, and upstream policy retrieval for agent-proctor"
+
+[dependencies]
+proctor-core = { workspace = true }
+proctor-parse = { workspace = true }
+blake3 = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }

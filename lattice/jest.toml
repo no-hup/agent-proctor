@@ -1,0 +1,44 @@
+# Jest and Vitest assertion specificity lattice for agent-proctor
+
+framework = "jest"
+version = "1"
+
+[exact]
+description = "Strict state equality, specific exceptions, or precise snapshot matches"
+matchers = [
+    "toBe",
+    "toEqual",
+    "toStrictEqual",
+    "toThrowError",
+    "toThrow",
+    "toHaveBeenCalledWith",
+    "toHaveBeenLastCalledWith",
+    "toMatchObject",
+    "toContainEqual",
+    "toMatchSnapshot",
+    "toMatchInlineSnapshot",
+]
+
+[weak]
+description = "Type checks, truthiness, or loose existence"
+matchers = [
+    "toBeDefined",
+    "toBeTruthy",
+    "toBeFalsy",
+    "toBeNull",
+    "toBeNaN",
+    "toBeGreaterThan",
+    "toBeLessThan",
+    "toBeInstanceOf",
+    "toContain",
+]
+
+[vacuous]
+description = "Hollow assertions or un-asserted execution"
+matchers = [
+    "expect(true).toBe(true)",
+    "expect(1).toBe(1)",
+    "expect(x).toBe(x)",
+    "expect(x)",              # expect without matcher call
+    "catch_swallow",          # expect inside try/catch with empty catch block
+]
