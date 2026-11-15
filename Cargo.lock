@@ -12,6 +12,7 @@ dependencies = [
  "proctor-core",
  "proctor-diff",
  "proctor-parse",
+ "proctor-probe",
  "proctor-rules",
  "serde",
  "serde_json",
@@ -356,6 +357,22 @@ dependencies = [
  "tree-sitter-javascript",
  "tree-sitter-python",
  "tree-sitter-typescript",
+]
+
+[[package]]
+name = "proctor-probe"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "blake3",
+ "proctor-core",
+ "proctor-diff",
+ "proctor-parse",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tracing",
 ]
 
 [[package]]

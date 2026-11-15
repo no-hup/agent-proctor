@@ -15,6 +15,7 @@ proctor-core = { workspace = true }
 proctor-parse = { workspace = true }
 proctor-diff = { workspace = true }
 proctor-rules = { workspace = true }
+proctor-probe = { workspace = true }
 clap = { workspace = true }
 colored = { workspace = true }
 serde = { workspace = true }

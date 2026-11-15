@@ -4,6 +4,7 @@ members = [
     "crates/proctor-parse",
     "crates/proctor-diff",
     "crates/proctor-rules",
+    "crates/proctor-probe",
     "crates/proctor-cli",
 ]
 resolver = "2"
@@ -42,3 +43,4 @@ proctor-core = { path = "crates/proctor-core" }
 proctor-parse = { path = "crates/proctor-parse" }
 proctor-diff = { path = "crates/proctor-diff" }
 proctor-rules = { path = "crates/proctor-rules" }
+proctor-probe = { path = "crates/proctor-probe" }

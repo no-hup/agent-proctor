@@ -4,7 +4,7 @@ use proctor_core::{Policy, Verdict};
 use proctor_diff::SemanticDiff;
 use proctor_rules::evaluate_rules;
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 mod git;
 mod reporter;
@@ -39,6 +39,9 @@ struct Cli {
 
     #[arg(long, global = true)]
     strict: bool,
+
+    #[arg(long, global = true)]
+    probe: bool,
 }
 
 #[derive(Subcommand)]
@@ -62,6 +65,26 @@ enum Commands {
 
         #[arg(long)]
         strict: bool,
+
+        #[arg(long)]
+        probe: bool,
+    },
+    /// Run ephemeral mutation probe in an isolated git worktree
+    Probe {
+        #[arg(short, long, default_value = "main")]
+        base: String,
+
+        #[arg(long, default_value = "HEAD")]
+        head: String,
+
+        #[arg(long, default_value_t = 3)]
+        max_mutants: usize,
+
+        #[arg(short, long, value_enum, default_value_t = OutputFormat::Pretty)]
+        format: OutputFormat,
+
+        #[arg(long)]
+        sarif: Option<PathBuf>,
     },
     /// Print version and supported language parsers
     Version,
@@ -91,7 +114,15 @@ fn main() -> Result<()> {
             sarif,
             waivers,
             strict,
-        }) => run_scan(&base, head.as_deref(), format, sarif, &waivers, strict),
+            probe,
+        }) => run_scan(&base, head.as_deref(), format, sarif, &waivers, strict, probe),
+        Some(Commands::Probe {
+            base,
+            head,
+            max_mutants,
+            format,
+            sarif,
+        }) => run_probe_cmd(&base, &head, max_mutants, format, sarif),
         None => run_scan(
             &cli.base,
             cli.head.as_deref(),
@@ -99,6 +130,7 @@ fn main() -> Result<()> {
             cli.sarif,
             &cli.waivers,
             cli.strict,
+            cli.probe,
         ),
     }
 }
@@ -110,6 +142,7 @@ fn run_scan(
     sarif_path: Option<PathBuf>,
     waiver_vec: &[String],
     strict: bool,
+    probe: bool,
 ) -> Result<()> {
     // 1. Get changed files from git
     let changed = match git::get_changed_files(base, head) {
@@ -148,7 +181,20 @@ fn run_scan(
     let accepted_waivers: HashSet<String> = waiver_vec.iter().cloned().collect();
 
     // 4. Evaluate rules
-    let findings = evaluate_rules(&diff, &policy, &accepted_waivers);
+    let mut findings = evaluate_rules(&diff, &policy, &accepted_waivers);
+
+    // 4b. Optional dynamic probe
+    if probe {
+        println!("proctor: Running dynamic mutation probe in ephemeral worktree...");
+        let head_ref = head.unwrap_or("HEAD");
+        if let Ok(probe_results) = proctor_probe::run_probe(Path::new("."), head_ref, &diff, 3) {
+            for res in probe_results {
+                if let Some(finding) = res.to_finding() {
+                    findings.push(finding);
+                }
+            }
+        }
+    }
 
     // 5. Generate SARIF if requested
     if let Some(path) = sarif_path {
@@ -183,6 +229,75 @@ fn run_scan(
     if has_block || (strict && has_review) {
         std::process::exit(2);
     } else if has_review {
+        std::process::exit(1);
+    } else {
+        std::process::exit(0);
+    }
+}
+
+fn run_probe_cmd(
+    base: &str,
+    head: &str,
+    max_mutants: usize,
+    format: OutputFormat,
+    sarif_path: Option<PathBuf>,
+) -> Result<()> {
+    let changed = git::get_changed_files(base, Some(head))?;
+    let diff = SemanticDiff::build(&changed.base_files, &changed.head_files)
+        .map_err(|e| anyhow::anyhow!("Semantic diff failed: {}", e))?;
+
+    println!("proctor: Dispatching ephemeral probe sandbox on ref '{}'...", head);
+    let probe_results = proctor_probe::run_probe(Path::new("."), head, &diff, max_mutants)?;
+
+    let mut findings = Vec::new();
+    let mut killed = 0;
+    let mut survived = 0;
+    let mut inconclusive = 0;
+
+    for res in &probe_results {
+        match res.outcome {
+            proctor_probe::ProbeOutcome::Killed => killed += 1,
+            proctor_probe::ProbeOutcome::Survived => {
+                survived += 1;
+                if let Some(f) = res.to_finding() {
+                    findings.push(f);
+                }
+            }
+            proctor_probe::ProbeOutcome::Inconclusive => inconclusive += 1,
+        }
+    }
+
+    match format {
+        OutputFormat::Pretty => {
+            println!("\n{}", "─".repeat(60));
+            println!("🔍 proctor probe: Mutation Results");
+            println!("  Total Mutants : {}", probe_results.len());
+            println!("  Killed        : {}", killed);
+            println!("  Survived      : {}", survived);
+            println!("  Inconclusive  : {}", inconclusive);
+            println!("{}\n", "─".repeat(60));
+
+            if !findings.is_empty() {
+                reporter::print_findings(&findings, base);
+            } else {
+                println!("✔ All mutants were successfully killed or asserted by tests.");
+            }
+        }
+        OutputFormat::Json => {
+            println!("{}", serde_json::to_string_pretty(&probe_results)?);
+        }
+        OutputFormat::Sarif => {
+            let sarif_val = sarif::generate_sarif(&findings);
+            println!("{}", serde_json::to_string_pretty(&sarif_val)?);
+        }
+    }
+
+    if let Some(path) = sarif_path {
+        let sarif_val = sarif::generate_sarif(&findings);
+        std::fs::write(&path, serde_json::to_string_pretty(&sarif_val)?)?;
+    }
+
+    if survived > 0 {
         std::process::exit(1);
     } else {
         std::process::exit(0);

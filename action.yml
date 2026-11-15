@@ -1,0 +1,87 @@
+name: 'agent-proctor'
+description: 'Deterministic PR integrity and anticheat gate for autonomous AI coding agents'
+author: 'The Proctor Team'
+
+branding:
+  icon: 'shield'
+  color: 'blue'
+
+inputs:
+  base-ref:
+    description: 'Base git commit SHA or branch to compare against'
+    required: false
+    default: ${{ github.event.pull_request.base.sha || github.base_ref || 'origin/main' }}
+  head-ref:
+    description: 'Head git commit SHA or branch'
+    required: false
+    default: ${{ github.event.pull_request.head.sha || github.sha || 'HEAD' }}
+  strict:
+    description: 'Treat REVIEW findings as hard BLOCK (exit 2)'
+    required: false
+    default: 'false'
+  probe:
+    description: 'Run ephemeral mutation probe in an isolated git worktree'
+    required: false
+    default: 'false'
+  sarif-file:
+    description: 'File path to write SARIF 2.1.0 output'
+    required: false
+    default: 'proctor-results.sarif'
+  github-token:
+    description: 'GitHub token for cryptographic waiver validation'
+    required: false
+    default: ${{ github.token }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Fetch PR commit objects
+      shell: bash
+      run: |
+        if [ -n "${{ inputs.base-ref }}" ] && [ "${{ inputs.base-ref }}" != "origin/main" ]; then
+          git fetch --depth=1 origin "${{ inputs.base-ref }}" || true
+        fi
+        if [ -n "${{ inputs.head-ref }}" ] && [ "${{ inputs.head-ref }}" != "HEAD" ]; then
+          git fetch --depth=1 origin "${{ inputs.head-ref }}" || true
+        fi
+
+    - name: Cryptographically verify reviewer waivers
+      id: waivers
+      shell: bash
+      env:
+        GITHUB_REPOSITORY: ${{ github.repository }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+      run: |
+        if [ -n "$PR_NUMBER" ]; then
+          WAIVERS=$(python3 ${{ github.action_path }}/scripts/fetch_waivers.py)
+          echo "verified_waivers=$WAIVERS" >> $GITHUB_OUTPUT
+          if [ -n "$WAIVERS" ]; then
+            echo "proctor: Active authenticated reviewer waivers: $WAIVERS"
+          fi
+        else
+          echo "verified_waivers=" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Run agent-proctor scan
+      shell: bash
+      run: |
+        ARGS="--base ${{ inputs.base-ref }} --head ${{ inputs.head-ref }} --sarif ${{ inputs.sarif-file }}"
+        
+        if [ "${{ inputs.strict }}" = "true" ]; then
+          ARGS="$ARGS --strict"
+        fi
+        
+        if [ "${{ inputs.probe }}" = "true" ]; then
+          ARGS="$ARGS --probe"
+        fi
+        
+        if [ -n "${{ steps.waivers.outputs.verified_waivers }}" ]; then
+          ARGS="$ARGS --waivers ${{ steps.waivers.outputs.verified_waivers }}"
+        fi
+
+        if command -v proctor &> /dev/null; then
+          proctor scan $ARGS
+        else
+          cargo run --release --bin proctor --manifest-path ${{ github.action_path }}/Cargo.toml -- scan $ARGS
+        fi

@@ -82,7 +82,11 @@ npx agent-proctor scan
 ### Run Locally on Current Branch
 
 ```bash
+# Static AST scan (<200ms)
 proctor scan --base origin/main
+
+# Dynamic ephemeral mutation probe with sentinel tracking
+proctor probe --base origin/main --head HEAD
 ```
 
 ---
@@ -111,11 +115,12 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Run AgentProctor
-        uses: no-hup/agent-proctor@v0.1.0
+      - name: Run AgentProctor Gate
+        uses: no-hup/agent-proctor@v1
         with:
-          base-ref: ${{ github.base_ref }}
-          sarif-out: proctor-results.sarif
+          base-ref: ${{ github.event.pull_request.base.sha }}
+          head-ref: ${{ github.event.pull_request.head.sha }}
+          sarif-file: proctor-results.sarif
 
       - name: Upload SARIF to GitHub Code Scanning
         if: always()

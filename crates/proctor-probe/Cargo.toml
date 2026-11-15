@@ -1,0 +1,19 @@
+[package]
+name = "proctor-probe"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Ephemeral isolated mutation probe and test kill verification for agent-proctor"
+
+[dependencies]
+proctor-core = { workspace = true }
+proctor-parse = { workspace = true }
+proctor-diff = { workspace = true }
+tempfile = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+blake3 = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
