@@ -114,9 +114,10 @@ Close subtle cheat vectors identified during architectural stress-testing:
 
 ---
 
-## 🔵 Phase 6: Synthetic Mutation & Fuzzing Corpus
+## 🔵 Phase 6: Synthetic Code Mutation & Fuzzing Corpus
 
-Rather than generating conversational dialogues, build an in-repo code mutation fuzzing engine:
+> **Design Note:** Runtime agent platforms (such as Future AGI) generate synthetic conversational chat dialogues for customer chatbots. For a deterministic code anticheat engine like Proctor, synthetic chat dialogues are completely useless.  
+> What would be valuable as an expansion is an automated **code mutation fuzzing engine** (generating thousands of AST-mutated test PRs to stress-test Proctor's detection lattice). For the v0.2 release, the checked-in golden corpus (`corpus/` with clean + attack fixtures) and our 43 unit/integration tests are completely sufficient.
 
 1. **AST Cheat Synthesizer:**
    - An internal tool (`proctor fuzzer`) that takes a clean repository and automatically synthesizes thousands of realistic cheat variants:
