@@ -213,6 +213,13 @@ When running in GitHub Actions, `agent-proctor` automatically renders a live fin
 
 ---
 
+## Documentation & Roadmap
+
+* **[Architecture Decision Records (ADRs)](docs/DECISIONS.md)**: Rationale behind our zero-LLM architecture, orphaned reference logic, and waiver design.
+* **[Project Roadmap](ROADMAP.md)**: Shipped milestones (Phases 0–2), empirical benchmark grounding (Phase 3), multi-language expansions, and upcoming releases.
+
+---
+
 ## License
 
 Apache-2.0. See [LICENSE](LICENSE) for details.
