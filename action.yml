@@ -98,7 +98,8 @@ runs:
           TARGET="x86_64"
         fi
 
-        URL="https://github.com/no-hup/agent-proctor/releases/download/${{ inputs.version }}/proctor-${OS}-${TARGET}.tar.gz"
+        # Download precompiled binary from public release asset
+        URL="https://github.com/no-hup/proctor-action/releases/download/${{ inputs.version }}/proctor-${OS}-${TARGET}.tar.gz"
         mkdir -p /tmp/proctor-bin
         if curl -sLf "$URL" -o /tmp/proctor.tar.gz; then
           tar -xzf /tmp/proctor.tar.gz -C /tmp/proctor-bin
