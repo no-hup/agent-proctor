@@ -83,6 +83,8 @@ pub fn read_git_file(git_ref: &str, file_path: &str) -> Result<String> {
 }
 
 /// Reads proctor.toml strictly from the protected base ref to prevent PR tampering.
+/// If the base ref has no policy committed (e.g. initial adoption PR), falls back to Policy::default().
+/// NEVER discovers from working tree / head ref to prevent agents from committing self-granting ignore rules.
 pub fn load_policy_from_base(base_ref: &str) -> Policy {
     for candidate in &["proctor.toml", ".proctor.toml"] {
         if let Ok(content) = read_git_file(base_ref, candidate) {
@@ -91,12 +93,16 @@ pub fn load_policy_from_base(base_ref: &str) -> Policy {
             }
         }
     }
-    Policy::discover()
+    Policy::default()
 }
 
 /// Filters changed files against the repository's configured ignored_paths.
+/// Explicitly protects proctor.toml and .proctor.toml so policy files can never ignore themselves out of inspection.
 pub fn filter_ignored_paths(changed: &mut ChangedFiles, ignored_patterns: &[String]) {
     let is_ignored = |path: &str| -> bool {
+        if path == "proctor.toml" || path == ".proctor.toml" {
+            return false;
+        }
         for pattern in ignored_patterns {
             let p = pattern.trim();
             if p.is_empty() {

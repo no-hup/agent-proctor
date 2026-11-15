@@ -58,10 +58,25 @@ runs:
         GITHUB_TOKEN: ${{ inputs.github-token }}
       run: |
         if [ -n "$PR_NUMBER" ]; then
+          # Extract review_mode strictly from base policy to prevent PR tampering
+          REVIEW_MODE="ack"
+          if git cat-file -e "${{ inputs.base-ref }}:proctor.toml" 2>/dev/null; then
+            MODE_EXTRACT=$(git show "${{ inputs.base-ref }}:proctor.toml" | grep -E '^review_mode\s*=' | sed -E 's/review_mode\s*=\s*["'"'"']([^"'"'"']+)["'"'"'].*/\1/' || true)
+            if [ -n "$MODE_EXTRACT" ]; then
+              REVIEW_MODE="$MODE_EXTRACT"
+            fi
+          elif git cat-file -e "${{ inputs.base-ref }}:.proctor.toml" 2>/dev/null; then
+            MODE_EXTRACT=$(git show "${{ inputs.base-ref }}:.proctor.toml" | grep -E '^review_mode\s*=' | sed -E 's/review_mode\s*=\s*["'"'"']([^"'"'"']+)["'"'"'].*/\1/' || true)
+            if [ -n "$MODE_EXTRACT" ]; then
+              REVIEW_MODE="$MODE_EXTRACT"
+            fi
+          fi
+          export PROCTOR_REVIEW_MODE="$REVIEW_MODE"
+
           WAIVERS=$(python3 ${{ github.action_path }}/scripts/fetch_waivers.py)
           echo "verified_waivers=$WAIVERS" >> $GITHUB_OUTPUT
           if [ -n "$WAIVERS" ]; then
-            echo "proctor: Active authenticated reviewer waivers: $WAIVERS"
+            echo "proctor: Active attested reviewer waivers: $WAIVERS"
           fi
         else
           echo "verified_waivers=" >> $GITHUB_OUTPUT
@@ -85,13 +100,14 @@ runs:
 
         URL="https://github.com/no-hup/agent-proctor/releases/download/${{ inputs.version }}/proctor-${OS}-${TARGET}.tar.gz"
         mkdir -p /tmp/proctor-bin
-        if curl -sLf "$URL" -o /tmp/proctor.tar.gz 2>/dev/null; then
+        if curl -sLf "$URL" -o /tmp/proctor.tar.gz; then
           tar -xzf /tmp/proctor.tar.gz -C /tmp/proctor-bin
           chmod +x /tmp/proctor-bin/proctor
           echo "/tmp/proctor-bin" >> $GITHUB_PATH
           echo "proctor: Downloaded precompiled binary from $URL"
         else
-          echo "proctor: Precompiled release not available; falling back to source build."
+          echo "::error::agent-proctor precompiled release binary could not be downloaded from $URL. Please verify inputs.version ('${{ inputs.version }}') or ensure a release asset exists for $OS-$TARGET."
+          exit 1
         fi
 
     - name: Run agent-proctor scan
@@ -109,8 +125,4 @@ runs:
           ARGS="$ARGS --experimental-probe"
         fi
 
-        if command -v proctor &> /dev/null; then
-          proctor scan $ARGS
-        else
-          cargo run --release --bin proctor --manifest-path ${{ github.action_path }}/Cargo.toml -- scan $ARGS
-        fi
+        proctor scan $ARGS

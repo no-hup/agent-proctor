@@ -9,7 +9,7 @@ use std::path::Path;
 pub fn evaluate_rules(
     diff: &SemanticDiff,
     policy: &Policy,
-    accepted_waivers: &HashSet<String>,
+    waivers: &WaiverSet,
 ) -> Vec<Finding> {
     let mut findings = Vec::new();
 
@@ -39,8 +39,9 @@ pub fn evaluate_rules(
     // 8. PROCTOR-006: Parametrize Row Drops
     evaluate_parametrize_rows(diff, &mut findings);
 
-    // Filter out findings accepted by an authorized human reviewer via waivers / acks
-    findings.retain(|f| !accepted_waivers.contains(&f.id));
+    // Filter out findings accepted by an authorized human reviewer via waivers / acks.
+    // Guard findings require maintainer_waivers; author_acks only suppress Report tier.
+    findings.retain(|f| !waivers.is_suppressed(f));
 
     findings
 }
@@ -456,16 +457,21 @@ fn evaluate_shadow_mocks(diff: &SemanticDiff, policy: &Policy, findings: &mut Ve
                     let id = Finding::compute_id(RuleId::ShadowMock, &test_name, &mock.target);
 
                     let target_clean = mock.target.to_lowercase();
+                    let target_leaf = mock.target.split('.').next_back().unwrap_or(&mock.target).to_lowercase();
                     let is_direct_diff_target = in_repo_symbols.iter().any(|sym| {
                         target_clean.contains(sym.as_str()) || sym.contains(target_clean.as_str())
                     });
+                    let is_sut_mock = pair.head_test.assertions.iter().any(|a| {
+                        let a_lower = a.text.to_lowercase();
+                        a_lower.contains(&target_leaf) || a_lower.contains(&target_clean)
+                    });
 
-                    let (verdict, tier) = if is_direct_diff_target || policy.strict_mode {
+                    let (verdict, tier) = if is_direct_diff_target || is_sut_mock || policy.strict_mode {
                         (
                             Verdict::Block {
                                 rule: RuleId::ShadowMock,
                                 evidence: format!(
-                                    "Shadow mock targeting modified in-repo production symbol: '{}'",
+                                    "Shadow mock targeting system under test or modified in-repo production symbol: '{}'",
                                     mock.target
                                 ),
                             },
@@ -812,7 +818,7 @@ def test_calc():
 
         let diff = SemanticDiff::build(&base_files, &head_files).unwrap();
         let policy = Policy::default();
-        let waivers = HashSet::new();
+        let waivers = WaiverSet::default();
 
         let findings = evaluate_rules(&diff, &policy, &waivers);
         assert_eq!(findings.len(), 1);
@@ -840,7 +846,7 @@ def test_tax():
 
         let diff = SemanticDiff::build(&base_files, &head_files).unwrap();
         let policy = Policy::default();
-        let waivers = HashSet::new();
+        let waivers = WaiverSet::default();
 
         let findings = evaluate_rules(&diff, &policy, &waivers);
         assert_eq!(findings.len(), 1);
@@ -879,7 +885,7 @@ def calculate_tax(amount):
 
         let diff = SemanticDiff::build(&base_files, &head_files).unwrap();
         let policy = Policy::default();
-        let waivers = HashSet::new();
+        let waivers = WaiverSet::default();
 
         let findings = evaluate_rules(&diff, &policy, &waivers);
         assert_eq!(findings.len(), 1);
@@ -909,7 +915,7 @@ def test_tax():
 
         let diff = SemanticDiff::build(&base_files, &head_files).unwrap();
         let policy = Policy::default();
-        let waivers = HashSet::new();
+        let waivers = WaiverSet::default();
 
         let findings = evaluate_rules(&diff, &policy, &waivers);
         assert_eq!(findings.len(), 1);
@@ -947,7 +953,7 @@ class User:
 
         let diff = SemanticDiff::build(&base_files, &head_files).unwrap();
         let policy = Policy::default();
-        let waivers = HashSet::new();
+        let waivers = WaiverSet::default();
 
         let findings = evaluate_rules(&diff, &policy, &waivers);
         assert_eq!(findings.len(), 0); // Clean pass because old_token was deleted!
@@ -969,7 +975,7 @@ class User:
 
         let diff = SemanticDiff::build(&base_files, &head_files).unwrap();
         let policy = Policy::default();
-        let waivers = HashSet::new();
+        let waivers = WaiverSet::default();
 
         let findings = evaluate_rules(&diff, &policy, &waivers);
         assert_eq!(findings.len(), 1);
@@ -1004,7 +1010,7 @@ def charge_card():
 
         let diff = SemanticDiff::build(&base_files, &head_files).unwrap();
         let policy = Policy::default();
-        let waivers = HashSet::new();
+        let waivers = WaiverSet::default();
 
         let findings = evaluate_rules(&diff, &policy, &waivers);
         assert_eq!(findings.len(), 1);
@@ -1039,7 +1045,7 @@ describe("Billing", () => {
 
         let diff = SemanticDiff::build(&base_files, &head_files).unwrap();
         let policy = Policy::default();
-        let waivers = HashSet::new();
+        let waivers = WaiverSet::default();
 
         let findings = evaluate_rules(&diff, &policy, &waivers);
         assert_eq!(findings.len(), 1);
@@ -1067,7 +1073,7 @@ def test_double(x, expected):
 
         let diff = SemanticDiff::build(&base_files, &head_files).unwrap();
         let policy = Policy::default();
-        let waivers = HashSet::new();
+        let waivers = WaiverSet::default();
 
         let findings = evaluate_rules(&diff, &policy, &waivers);
         assert_eq!(findings.len(), 1);
@@ -1091,7 +1097,7 @@ def test_double(x, expected):
 
         let diff = SemanticDiff::build(&base_files, &head_files).unwrap();
         let policy = Policy::default();
-        let waivers = HashSet::new();
+        let waivers = WaiverSet::default();
 
         let findings = evaluate_rules(&diff, &policy, &waivers);
         assert_eq!(findings.len(), 1);
@@ -1115,7 +1121,7 @@ def test_double(x, expected):
 
         let diff = SemanticDiff::build(&base_files, &head_files).unwrap();
         let policy = Policy::default();
-        let waivers = HashSet::new();
+        let waivers = WaiverSet::default();
 
         let findings = evaluate_rules(&diff, &policy, &waivers);
         assert_eq!(findings.len(), 1);
@@ -1153,15 +1159,50 @@ def test_calc():
         let diff = SemanticDiff::build(&base_files, &head_files).unwrap();
         let policy = Policy::default();
 
-        let empty_waivers = HashSet::new();
+        let empty_waivers = WaiverSet::default();
         let unverified_findings = evaluate_rules(&diff, &policy, &empty_waivers);
         assert_eq!(unverified_findings.len(), 1);
         let finding_id = unverified_findings[0].id.clone();
 
-        let mut waivers = HashSet::new();
-        waivers.insert(finding_id);
+        let mut waivers = WaiverSet::default();
+        waivers.maintainer_waivers.insert(finding_id.clone());
 
         let waived_findings = evaluate_rules(&diff, &policy, &waivers);
         assert_eq!(waived_findings.len(), 0);
+    }
+
+    #[test]
+    fn test_author_ack_cannot_clear_guard_findings() {
+        let mut base_files = HashMap::new();
+        base_files.insert(
+            ".github/workflows/ci.yml".to_string(),
+            "steps:\n  - run: pytest\n".to_string(),
+        );
+
+        let mut head_files = HashMap::new();
+        head_files.insert(
+            ".github/workflows/ci.yml".to_string(),
+            "steps:\n  - run: pytest || true\n".to_string(),
+        );
+
+        let diff = SemanticDiff::build(&base_files, &head_files).unwrap();
+        let policy = Policy::default();
+
+        let findings = evaluate_rules(&diff, &policy, &WaiverSet::default());
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].tier, RuleTier::Guard);
+        let finding_id = findings[0].id.clone();
+
+        // An author ack on their own PR CANNOT clear a Guard finding
+        let mut author_ack_set = WaiverSet::default();
+        author_ack_set.author_acks.insert(finding_id.clone());
+        let unsuppressed = evaluate_rules(&diff, &policy, &author_ack_set);
+        assert_eq!(unsuppressed.len(), 1, "Author ack must not clear Guard finding");
+
+        // A second reviewer maintainer waiver CAN clear it
+        let mut maintainer_set = WaiverSet::default();
+        maintainer_set.maintainer_waivers.insert(finding_id);
+        let suppressed = evaluate_rules(&diff, &policy, &maintainer_set);
+        assert_eq!(suppressed.len(), 0, "Maintainer waiver can clear Guard finding");
     }
 }

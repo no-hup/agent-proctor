@@ -3,7 +3,6 @@ use clap::{Parser, Subcommand, ValueEnum};
 use proctor_core::{Policy, RuleId, RuleTier, ScanReport, Verdict};
 use proctor_diff::SemanticDiff;
 use proctor_rules::evaluate_rules;
-use std::collections::HashSet;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
@@ -238,18 +237,31 @@ fn run_scan(
         .map_err(|e| anyhow::anyhow!("Semantic diff failed: {}", e))?;
 
     // 4. Configure verified waivers & acks
-    let mut accepted_waivers: HashSet<String> = waiver_vec.iter().cloned().collect();
-    if let Ok(env_waivers) = std::env::var("PROCTOR_VERIFIED_WAIVERS") {
-        for w in env_waivers.split(',') {
-            let trimmed = w.trim();
-            if !trimmed.is_empty() {
-                accepted_waivers.insert(trimmed.to_string());
+    // In local execution, env waivers are disabled to prevent agent self-waiver in tool loops.
+    // Env-based waivers are strictly parsed in CI when GITHUB_ACTIONS is present.
+    let mut waiver_set = proctor_core::WaiverSet::default();
+    for w in waiver_vec {
+        waiver_set.maintainer_waivers.insert(w.clone());
+    }
+
+    if std::env::var("GITHUB_ACTIONS").is_ok() {
+        if let Ok(env_waivers) = std::env::var("PROCTOR_VERIFIED_WAIVERS") {
+            if let Ok(parsed_set) = serde_json::from_str::<proctor_core::WaiverSet>(&env_waivers) {
+                waiver_set.maintainer_waivers.extend(parsed_set.maintainer_waivers);
+                waiver_set.author_acks.extend(parsed_set.author_acks);
+            } else {
+                for w in env_waivers.split(',') {
+                    let trimmed = w.trim();
+                    if !trimmed.is_empty() {
+                        waiver_set.maintainer_waivers.insert(trimmed.to_string());
+                    }
+                }
             }
         }
     }
 
     // 5. Evaluate rules
-    let mut findings = evaluate_rules(&diff, &policy, &accepted_waivers);
+    let mut findings = evaluate_rules(&diff, &policy, &waiver_set);
 
     // 5b. Optional dynamic probe
     if experimental_probe {
@@ -428,7 +440,7 @@ fn run_audit(limit: usize, format: OutputFormat, label_path: Option<PathBuf>) ->
         .collect();
 
     let policy = Policy::discover();
-    let empty_waivers = HashSet::new();
+    let empty_waivers = proctor_core::WaiverSet::default();
 
     let mut total_audited = 0;
     let mut clean_commits = 0;
@@ -569,6 +581,9 @@ fn run_eval(
     }
 
     println!("proctor eval: Loading predictions from {}", predictions_path.display());
+    if repos_dir.is_none() {
+        println!("proctor eval: Note: repos_dir not provided; evaluating in fragment-safe mode.");
+    }
     let file = std::fs::File::open(predictions_path)?;
     let reader = BufReader::new(file);
 
@@ -579,7 +594,7 @@ fn run_eval(
     let mut block_count = 0;
 
     let policy = Policy::default();
-    let empty_waivers = HashSet::new();
+    let empty_waivers = proctor_core::WaiverSet::default();
 
     for line_res in reader.lines() {
         let line = line_res?;
@@ -587,7 +602,18 @@ fn run_eval(
             continue;
         }
 
-        let entry: serde_json::Value = serde_json::from_str(&line)?;
+        let entry: serde_json::Value = match serde_json::from_str(&line) {
+            Ok(v) => v,
+            Err(e) => {
+                let err_record = serde_json::json!({
+                    "instance_id": "malformed_json",
+                    "verdict": "error",
+                    "error": e.to_string(),
+                });
+                writeln!(out_file, "{}", serde_json::to_string(&err_record)?)?;
+                continue;
+            }
+        };
         let instance_id = entry
             .get("instance_id")
             .and_then(|v| v.as_str())
@@ -607,7 +633,16 @@ fn run_eval(
         let findings = if base_files.is_empty() && head_files.is_empty() {
             Vec::new()
         } else if let Ok(diff) = SemanticDiff::build(&base_files, &head_files) {
-            evaluate_rules(&diff, &policy, &empty_waivers)
+            let mut eval_findings = evaluate_rules(&diff, &policy, &empty_waivers);
+            if repos_dir.is_none() {
+                // In diff-only fragment mode, isolate fragment-safe rules and exclude
+                // parse failures caused by missing class/function scope in isolated hunks.
+                eval_findings.retain(|f| {
+                    !f.evidence.contains("Tree-sitter parse error")
+                        && !f.evidence.contains("Syntax error detected")
+                });
+            }
+            eval_findings
         } else {
             Vec::new()
         };
@@ -653,23 +688,51 @@ fn run_eval(
 }
 
 /// Parses a unified git diff patch into base and head in-memory files.
+/// When repos_dir is provided, attempts to load original base file context to permit full AST symbol linkage.
 fn parse_patch_to_files(
     patch: &str,
-    _repos_dir: Option<&Path>,
-    _instance_id: &str,
+    repos_dir: Option<&Path>,
+    instance_id: &str,
 ) -> (std::collections::HashMap<String, String>, std::collections::HashMap<String, String>) {
     let mut base_files = std::collections::HashMap::new();
     let mut head_files = std::collections::HashMap::new();
+
+    let repo_path = repos_dir.map(|d| d.join(instance_id));
+    let has_repo = repo_path.as_ref().map(|p| p.is_dir()).unwrap_or(false);
 
     let mut current_file: Option<String> = None;
     let mut current_base_lines = Vec::new();
     let mut current_head_lines = Vec::new();
 
+    let flush_file = |file: String,
+                      base_lines: &[String],
+                      head_lines: &[String],
+                      b_files: &mut std::collections::HashMap<String, String>,
+                      h_files: &mut std::collections::HashMap<String, String>| {
+        if has_repo {
+            if let Some(ref r_path) = repo_path {
+                let full_path = r_path.join(&file);
+                if let Ok(base_content) = std::fs::read_to_string(&full_path) {
+                    b_files.insert(file.clone(), base_content);
+                    h_files.insert(file, head_lines.join("\n"));
+                    return;
+                }
+            }
+        }
+        b_files.insert(file.clone(), base_lines.join("\n"));
+        h_files.insert(file, head_lines.join("\n"));
+    };
+
     for line in patch.lines() {
         if line.starts_with("diff --git ") {
             if let Some(file) = current_file.take() {
-                base_files.insert(file.clone(), current_base_lines.join("\n"));
-                head_files.insert(file, current_head_lines.join("\n"));
+                flush_file(
+                    file,
+                    &current_base_lines,
+                    &current_head_lines,
+                    &mut base_files,
+                    &mut head_files,
+                );
                 current_base_lines.clear();
                 current_head_lines.clear();
             }
@@ -694,8 +757,13 @@ fn parse_patch_to_files(
     }
 
     if let Some(file) = current_file {
-        base_files.insert(file.clone(), current_base_lines.join("\n"));
-        head_files.insert(file, current_head_lines.join("\n"));
+        flush_file(
+            file,
+            &current_base_lines,
+            &current_head_lines,
+            &mut base_files,
+            &mut head_files,
+        );
     }
 
     (base_files, head_files)

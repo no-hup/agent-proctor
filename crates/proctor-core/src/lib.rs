@@ -194,6 +194,46 @@ pub enum ReviewMode {
     Off,
 }
 
+/// Authorized waivers and acknowledgements for finding suppression.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WaiverSet {
+    /// Waivers from authenticated non-author maintainers (clears Guard & Report tiers).
+    #[serde(default)]
+    pub maintainer_waivers: std::collections::HashSet<String>,
+    /// Attributed acknowledgements from PR authors (clears Report tier only).
+    #[serde(default)]
+    pub author_acks: std::collections::HashSet<String>,
+}
+
+impl WaiverSet {
+    /// Creates a WaiverSet from maintainer waivers only.
+    pub fn from_maintainers(maintainer_waivers: std::collections::HashSet<String>) -> Self {
+        Self {
+            maintainer_waivers,
+            author_acks: std::collections::HashSet::new(),
+        }
+    }
+
+    /// Evaluates if a finding is suppressed.
+    /// Guard findings (CI sabotage, test demolition, policy tamper) can ONLY be suppressed by maintainer waivers.
+    /// Author acknowledgements can ONLY suppress Report findings (spec evolution, flakiness quarantine).
+    pub fn is_suppressed(&self, finding: &Finding) -> bool {
+        if self.maintainer_waivers.contains(&finding.id) {
+            return true;
+        }
+        if finding.tier == RuleTier::Report && self.author_acks.contains(&finding.id) {
+            return true;
+        }
+        false
+    }
+}
+
+impl From<std::collections::HashSet<String>> for WaiverSet {
+    fn from(set: std::collections::HashSet<String>) -> Self {
+        Self::from_maintainers(set)
+    }
+}
+
 /// Structured JSON scan report format.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScanReport {

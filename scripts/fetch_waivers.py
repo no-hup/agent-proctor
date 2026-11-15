@@ -2,11 +2,19 @@
 """
 Fetches and verifies GitHub-attested PR review waivers and acknowledgements from the GitHub REST API.
 
+Outputs structured JSON matching WaiverSet:
+{
+  "maintainer_waivers": ["<id>", ...],
+  "author_acks": ["<id>", ...]
+}
+
 Supports Policy review_mode:
 - "ack" (default): Attributed acknowledgements (`proctor: ack <id>` or `proctor: accept <id>`)
-  are accepted from the PR author or any repository collaborator/member/owner.
+  are accepted from the PR author (which clear Report-tier findings ONLY) or from any
+  repository collaborator/member/owner (which clear Guard and Report tiers).
 - "second_reviewer": Enforces strict non-author review from an authenticated collaborator/member/owner.
-- "off": Waivers are disabled.
+  Author acks are ignored.
+- "off": Waivers and acks are disabled.
 """
 
 import json
@@ -18,9 +26,10 @@ import urllib.request
 WAIVER_PATTERN = re.compile(r"proctor:\s*(?:accept|ack)\s+([a-f0-9]{12})", re.IGNORECASE)
 ALLOWED_ASSOCIATIONS = {"OWNER", "MEMBER", "COLLABORATOR"}
 
-def fetch_waivers(repo: str, pr_number: str, token: str, review_mode: str) -> list[str]:
+def fetch_waivers(repo: str, pr_number: str, token: str, review_mode: str) -> dict:
+    empty_res = {"maintainer_waivers": [], "author_acks": []}
     if review_mode == "off":
-        return []
+        return empty_res
 
     headers = {
         "Accept": "application/vnd.github.v3+json",
@@ -37,12 +46,14 @@ def fetch_waivers(repo: str, pr_number: str, token: str, review_mode: str) -> li
             pr_data = json.loads(resp.read().decode())
     except Exception as e:
         sys.stderr.write(f"proctor: warning: unable to fetch PR data: {e}\n")
-        return []
+        return empty_res
 
     pr_author = pr_data.get("user", {}).get("login", "")
 
     # 2. Get PR reviews and review comments
-    waivers = set()
+    maintainer_waivers = set()
+    author_acks = set()
+
     endpoints = [
         f"https://api.github.com/repos/{repo}/pulls/{pr_number}/reviews",
         f"https://api.github.com/repos/{repo}/pulls/{pr_number}/comments",
@@ -67,19 +78,22 @@ def fetch_waivers(repo: str, pr_number: str, token: str, review_mode: str) -> li
             if user_type == "Bot":
                 continue
 
-            # In strict second_reviewer mode, PR author cannot approve their own waivers
-            if review_mode == "second_reviewer" and user_login == pr_author:
-                continue
-
-            # Ensure user has write/collaborator permissions (unless it's author acknowledging under ack mode)
-            if assoc not in ALLOWED_ASSOCIATIONS and user_login != pr_author:
-                continue
-
             body = item.get("body", "")
-            for match in WAIVER_PATTERN.finditer(body):
-                waivers.add(match.group(1).lower())
+            matches = [m.group(1).lower() for m in WAIVER_PATTERN.finditer(body)]
+            if not matches:
+                continue
 
-    return sorted(list(waivers))
+            # Non-author maintainer waivers: can waive Guard + Report
+            if assoc in ALLOWED_ASSOCIATIONS and user_login != pr_author:
+                maintainer_waivers.update(matches)
+            # PR author acks: can ONLY waive Report (never Guard)
+            elif user_login == pr_author and review_mode == "ack":
+                author_acks.update(matches)
+
+    return {
+        "maintainer_waivers": sorted(list(maintainer_waivers)),
+        "author_acks": sorted(list(author_acks)),
+    }
 
 def main():
     repo = os.environ.get("GITHUB_REPOSITORY", "")
@@ -88,11 +102,11 @@ def main():
     review_mode = os.environ.get("PROCTOR_REVIEW_MODE", "ack").strip().lower()
 
     if not repo or not pr_number:
-        print("")
+        print(json.dumps({"maintainer_waivers": [], "author_acks": []}))
         return
 
-    waivers = fetch_waivers(repo, pr_number, token, review_mode)
-    print(",".join(waivers))
+    waivers_dict = fetch_waivers(repo, pr_number, token, review_mode)
+    print(json.dumps(waivers_dict))
 
 if __name__ == "__main__":
     main()
