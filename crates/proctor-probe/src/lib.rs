@@ -78,7 +78,7 @@ pub fn run_probe(
     let is_python = target_test_file.ends_with(".py");
 
     // 3. For each modified production source file in head
-    for (src_path, _) in &diff.head_sources {
+    for src_path in diff.head_sources.keys() {
         let abs_src_path = wt.join(src_path);
         if !abs_src_path.exists() {
             continue;

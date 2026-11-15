@@ -102,19 +102,18 @@ impl SemanticDiff {
         // Pass 1: Exact TestId match
         for (b_idx, b_test) in all_base_tests.iter().enumerate() {
             for (h_idx, h_test) in all_head_tests.iter().enumerate() {
-                if !matched_head_indices.contains(&h_idx) {
-                    if b_test.id.file_path == h_test.id.file_path
-                        && b_test.id.scope_hierarchy == h_test.id.scope_hierarchy
-                        && b_test.id.name == h_test.id.name
-                    {
-                        paired_tests.push(TestPair {
-                            base_test: b_test.clone(),
-                            head_test: h_test.clone(),
-                        });
-                        matched_base_indices.insert(b_idx);
-                        matched_head_indices.insert(h_idx);
-                        break;
-                    }
+                if !matched_head_indices.contains(&h_idx)
+                    && b_test.id.file_path == h_test.id.file_path
+                    && b_test.id.scope_hierarchy == h_test.id.scope_hierarchy
+                    && b_test.id.name == h_test.id.name
+                {
+                    paired_tests.push(TestPair {
+                        base_test: b_test.clone(),
+                        head_test: h_test.clone(),
+                    });
+                    matched_base_indices.insert(b_idx);
+                    matched_head_indices.insert(h_idx);
+                    break;
                 }
             }
         }

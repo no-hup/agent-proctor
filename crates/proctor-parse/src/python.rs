@@ -222,9 +222,13 @@ fn parse_assert_statement(assert_node: Node, source: &str) -> Option<ParsedAsser
 
         if expr_text == "True" || expr_text == "1" || expr_text == "not False" {
             strength = AssertionStrength::Vacuous;
-        } else if expr_text.contains("is not None") || expr_text.contains("is not") {
-            strength = AssertionStrength::Weak;
-        } else if expr_text.contains(">=") || expr_text.contains("<=") || expr_text.contains(">") || expr_text.contains("<") {
+        } else if expr_text.contains("is not None")
+            || expr_text.contains("is not")
+            || expr_text.contains(">=")
+            || expr_text.contains("<=")
+            || expr_text.contains('>')
+            || expr_text.contains('<')
+        {
             strength = AssertionStrength::Weak;
         } else if expr.kind() == "comparison_operator" {
             let left = expr.child(0);
@@ -291,8 +295,6 @@ fn parse_unittest_call(call_node: Node, source: &str) -> Option<ParsedAssertion>
                 expected_literal = Some(arg_txt.to_string());
             }
         }
-    } else if fn_text.ends_with("assertTrue") || fn_text.ends_with("assertFalse") || fn_text.ends_with("assertIsNotNone") {
-        strength = AssertionStrength::Weak;
     } else {
         strength = AssertionStrength::Weak;
     }

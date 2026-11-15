@@ -3,7 +3,7 @@ use serde_json::json;
 
 /// Converts a slice of findings into a SARIF 2.1.0 JSON object.
 pub fn generate_sarif(findings: &[Finding]) -> serde_json::Value {
-    let rules = vec![
+    let rules = [
         RuleId::AssertionLock,
         RuleId::ShadowMock,
         RuleId::CiWorkflowSabotage,

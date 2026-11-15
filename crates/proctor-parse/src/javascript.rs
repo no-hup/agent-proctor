@@ -184,11 +184,15 @@ fn parse_expect_call(call_node: Node, source: &str) -> Option<ParsedAssertion> {
 
     if text.contains(".toBe(true)") && text.contains("expect(true)") {
         strength = AssertionStrength::Vacuous;
-    } else if text.contains("expect.anything()") || text.contains("expect.any(") || text.contains("toMatchObject({})") {
-        strength = AssertionStrength::Weak;
-    } else if text.contains(".toBeDefined()") || text.contains(".toBeTruthy()") || text.contains(".toBeFalsy()") {
-        strength = AssertionStrength::Weak;
-    } else if text.contains(".toBeNull()") || text.contains(".toBeNaN()") {
+    } else if text.contains("expect.anything()")
+        || text.contains("expect.any(")
+        || text.contains("toMatchObject({})")
+        || text.contains(".toBeDefined()")
+        || text.contains(".toBeTruthy()")
+        || text.contains(".toBeFalsy()")
+        || text.contains(".toBeNull()")
+        || text.contains(".toBeNaN()")
+    {
         strength = AssertionStrength::Weak;
     } else if text.contains(".toBe(") || text.contains(".toEqual(") || text.contains(".toStrictEqual(") {
         strength = AssertionStrength::Exact;
