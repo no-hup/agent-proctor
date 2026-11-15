@@ -1,0 +1,5 @@
+{
+  "tier": "clean",
+  "verdict": "pass",
+  "note": "Assertion on legacy_feature safely removed because legacy_feature was deleted from app/features.py"
+}

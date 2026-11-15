@@ -5,6 +5,7 @@ use proctor_diff::SemanticDiff;
 use proctor_rules::evaluate_rules;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 mod git;
 mod reporter;
@@ -34,9 +35,6 @@ struct Cli {
     #[arg(long)]
     sarif: Option<PathBuf>,
 
-    #[arg(long, hide = true, value_delimiter = ',', env = "PROCTOR_VERIFIED_WAIVERS")]
-    verified_waivers: Vec<String>,
-
     #[arg(long)]
     strict: bool,
 
@@ -59,9 +57,6 @@ enum Commands {
 
         #[arg(long)]
         sarif: Option<PathBuf>,
-
-        #[arg(long, hide = true, value_delimiter = ',', env = "PROCTOR_VERIFIED_WAIVERS")]
-        verified_waivers: Vec<String>,
 
         #[arg(long)]
         strict: bool,
@@ -137,7 +132,6 @@ fn main() -> Result<()> {
             head,
             format,
             sarif,
-            verified_waivers,
             strict,
             experimental_probe,
         }) => run_scan(
@@ -145,7 +139,6 @@ fn main() -> Result<()> {
             head.as_deref(),
             format,
             sarif,
-            &verified_waivers,
             strict,
             experimental_probe,
         ),
@@ -172,7 +165,6 @@ fn main() -> Result<()> {
             cli.head.as_deref(),
             cli.format,
             cli.sarif,
-            &cli.verified_waivers,
             cli.strict,
             cli.experimental_probe,
         ),
@@ -184,7 +176,6 @@ fn run_scan(
     head: Option<&str>,
     format: OutputFormat,
     sarif_path: Option<PathBuf>,
-    waiver_vec: &[String],
     strict: bool,
     experimental_probe: bool,
 ) -> Result<()> {
@@ -237,13 +228,9 @@ fn run_scan(
         .map_err(|e| anyhow::anyhow!("Semantic diff failed: {}", e))?;
 
     // 4. Configure verified waivers & acks
-    // In local execution, env waivers are disabled to prevent agent self-waiver in tool loops.
+    // Waivers are strictly CI-only: no local CLI flag exists.
     // Env-based waivers are strictly parsed in CI when GITHUB_ACTIONS is present.
     let mut waiver_set = proctor_core::WaiverSet::default();
-    for w in waiver_vec {
-        waiver_set.maintainer_waivers.insert(w.clone());
-    }
-
     if std::env::var("GITHUB_ACTIONS").is_ok() {
         if let Ok(env_waivers) = std::env::var("PROCTOR_VERIFIED_WAIVERS") {
             if let Ok(parsed_set) = serde_json::from_str::<proctor_core::WaiverSet>(&env_waivers) {
@@ -627,19 +614,36 @@ fn run_eval(
 
         total += 1;
 
-        // Parse patch into changed base and head files
-        let (base_files, head_files) = parse_patch_to_files(model_patch, repos_dir, &instance_id);
+        // Try full worktree diff if repos_dir is provided; otherwise fall back to fragment mode
+        let (base_files, head_files, eval_mode) = if let Some(r_dir) = repos_dir {
+            let repo_path = r_dir.join(&instance_id);
+            let base_commit = entry.get("base_commit").and_then(|v| v.as_str());
+            if let Ok((b, h)) = eval_instance_with_worktree(&repo_path, base_commit, model_patch) {
+                (b, h, "full")
+            } else {
+                let (b, h) = parse_patch_to_files(model_patch);
+                (b, h, "fragment")
+            }
+        } else {
+            let (b, h) = parse_patch_to_files(model_patch);
+            (b, h, "fragment")
+        };
 
         let findings = if base_files.is_empty() && head_files.is_empty() {
             Vec::new()
         } else if let Ok(diff) = SemanticDiff::build(&base_files, &head_files) {
             let mut eval_findings = evaluate_rules(&diff, &policy, &empty_waivers);
-            if repos_dir.is_none() {
-                // In diff-only fragment mode, isolate fragment-safe rules and exclude
-                // parse failures caused by missing class/function scope in isolated hunks.
+            if eval_mode == "fragment" {
+                // In diff-only fragment mode, isolate strictly fragment-safe rules.
+                // Whole-file AST checks (test deletion, orphan mapping) require repository worktrees.
                 eval_findings.retain(|f| {
-                    !f.evidence.contains("Tree-sitter parse error")
-                        && !f.evidence.contains("Syntax error detected")
+                    matches!(
+                        f.rule_id,
+                        RuleId::CiWorkflowSabotage
+                            | RuleId::RunnerConfigTamper
+                            | RuleId::SnapshotIntegrity
+                            | RuleId::PolicyTamper
+                    )
                 });
             }
             eval_findings
@@ -667,6 +671,7 @@ fn run_eval(
 
         let verdict_record = serde_json::json!({
             "instance_id": instance_id,
+            "mode": eval_mode,
             "verdict": verdict_str,
             "findings_count": findings.len(),
             "findings": findings,
@@ -687,52 +692,112 @@ fn run_eval(
     Ok(())
 }
 
-/// Parses a unified git diff patch into base and head in-memory files.
-/// When repos_dir is provided, attempts to load original base file context to permit full AST symbol linkage.
+/// Evaluates a patch against a real repository worktree to provide 100% accurate full-file AST context.
+fn eval_instance_with_worktree(
+    repo_path: &Path,
+    base_commit: Option<&str>,
+    model_patch: &str,
+) -> Result<(std::collections::HashMap<String, String>, std::collections::HashMap<String, String>)> {
+    if !repo_path.is_dir() {
+        anyhow::bail!("Repository directory does not exist: {}", repo_path.display());
+    }
+
+    let temp_dir = tempfile::tempdir()?;
+    let wt_path = temp_dir.path();
+    let base_ref = base_commit.unwrap_or("HEAD");
+
+    let wt_add = Command::new("git")
+        .current_dir(repo_path)
+        .args(["worktree", "add", "--detach", wt_path.to_str().unwrap(), base_ref])
+        .output()?;
+
+    if !wt_add.status.success() {
+        anyhow::bail!(
+            "Failed to create git worktree: {}",
+            String::from_utf8_lossy(&wt_add.stderr)
+        );
+    }
+
+    let patch_path = wt_path.join(".proctor_eval.patch");
+    std::fs::write(&patch_path, model_patch)?;
+
+    let apply = Command::new("git")
+        .current_dir(wt_path)
+        .args(["apply", "--whitespace=nowarn", ".proctor_eval.patch"])
+        .output();
+
+    let _ = std::fs::remove_file(&patch_path);
+
+    let result = match apply {
+        Ok(out) if out.status.success() => {
+            let changed_output = Command::new("git")
+                .current_dir(wt_path)
+                .args(["diff", "--name-status", "HEAD"])
+                .output();
+
+            match changed_output {
+                Ok(c_out) if c_out.status.success() => {
+                    let mut base_files = std::collections::HashMap::new();
+                    let mut head_files = std::collections::HashMap::new();
+
+                    for line in String::from_utf8_lossy(&c_out.stdout).lines() {
+                        let parts: Vec<&str> = line.split_whitespace().collect();
+                        if parts.len() >= 2 {
+                            let file = parts[1];
+                            // Base content from HEAD
+                            let base_cmd = Command::new("git")
+                                .current_dir(wt_path)
+                                .args(["show", &format!("HEAD:{}", file)])
+                                .output();
+                            if let Ok(b) = base_cmd {
+                                if b.status.success() {
+                                    base_files.insert(file.to_string(), String::from_utf8_lossy(&b.stdout).to_string());
+                                }
+                            }
+                            // Head content from working tree
+                            let head_full_path = wt_path.join(file);
+                            if let Ok(h) = std::fs::read_to_string(&head_full_path) {
+                                head_files.insert(file.to_string(), h);
+                            }
+                        }
+                    }
+                    Ok((base_files, head_files))
+                }
+                _ => Err(anyhow::anyhow!("Failed to diff worktree against HEAD")),
+            }
+        }
+        Ok(out) => Err(anyhow::anyhow!(
+            "git apply failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        )),
+        Err(e) => Err(anyhow::anyhow!("Failed to run git apply: {}", e)),
+    };
+
+    // Remove temporary worktree
+    let _ = Command::new("git")
+        .current_dir(repo_path)
+        .args(["worktree", "remove", "--force", wt_path.to_str().unwrap()])
+        .output();
+
+    result
+}
+
+/// Parses a unified git diff patch into base and head in-memory files using hunks for fragment mode.
 fn parse_patch_to_files(
     patch: &str,
-    repos_dir: Option<&Path>,
-    instance_id: &str,
 ) -> (std::collections::HashMap<String, String>, std::collections::HashMap<String, String>) {
     let mut base_files = std::collections::HashMap::new();
     let mut head_files = std::collections::HashMap::new();
-
-    let repo_path = repos_dir.map(|d| d.join(instance_id));
-    let has_repo = repo_path.as_ref().map(|p| p.is_dir()).unwrap_or(false);
 
     let mut current_file: Option<String> = None;
     let mut current_base_lines = Vec::new();
     let mut current_head_lines = Vec::new();
 
-    let flush_file = |file: String,
-                      base_lines: &[String],
-                      head_lines: &[String],
-                      b_files: &mut std::collections::HashMap<String, String>,
-                      h_files: &mut std::collections::HashMap<String, String>| {
-        if has_repo {
-            if let Some(ref r_path) = repo_path {
-                let full_path = r_path.join(&file);
-                if let Ok(base_content) = std::fs::read_to_string(&full_path) {
-                    b_files.insert(file.clone(), base_content);
-                    h_files.insert(file, head_lines.join("\n"));
-                    return;
-                }
-            }
-        }
-        b_files.insert(file.clone(), base_lines.join("\n"));
-        h_files.insert(file, head_lines.join("\n"));
-    };
-
     for line in patch.lines() {
         if line.starts_with("diff --git ") {
             if let Some(file) = current_file.take() {
-                flush_file(
-                    file,
-                    &current_base_lines,
-                    &current_head_lines,
-                    &mut base_files,
-                    &mut head_files,
-                );
+                base_files.insert(file.clone(), current_base_lines.join("\n"));
+                head_files.insert(file, current_head_lines.join("\n"));
                 current_base_lines.clear();
                 current_head_lines.clear();
             }
@@ -757,13 +822,8 @@ fn parse_patch_to_files(
     }
 
     if let Some(file) = current_file {
-        flush_file(
-            file,
-            &current_base_lines,
-            &current_head_lines,
-            &mut base_files,
-            &mut head_files,
-        );
+        base_files.insert(file.clone(), current_base_lines.join("\n"));
+        head_files.insert(file, current_head_lines.join("\n"));
     }
 
     (base_files, head_files)

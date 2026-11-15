@@ -83,9 +83,29 @@ pub fn read_git_file(git_ref: &str, file_path: &str) -> Result<String> {
 }
 
 /// Reads proctor.toml strictly from the protected base ref to prevent PR tampering.
-/// If the base ref has no policy committed (e.g. initial adoption PR), falls back to Policy::default().
+/// If the base ref commit is invalid or unfetched, exits with code 3 (PolicyDegradationError) to prevent silent fallback.
+/// If the base ref commit exists but has no policy committed (e.g. initial PR), returns Policy::default().
 /// NEVER discovers from working tree / head ref to prevent agents from committing self-granting ignore rules.
 pub fn load_policy_from_base(base_ref: &str) -> Policy {
+    // 1. Verify that base_ref exists as a valid commit in the repository
+    let ref_check = Command::new("git")
+        .arg("rev-parse")
+        .arg("--verify")
+        .arg(format!("{}^{{commit}}", base_ref))
+        .output();
+
+    if let Ok(check) = ref_check {
+        if !check.status.success() {
+            eprintln!(
+                "proctor: fatal: base git ref '{}' is not present in local repository. Cannot safely verify base policy.",
+                base_ref
+            );
+            eprintln!("Ensure 'git fetch origin {}' or similar was run before proctor scan.", base_ref);
+            std::process::exit(3);
+        }
+    }
+
+    // 2. Load policy from base ref commit
     for candidate in &["proctor.toml", ".proctor.toml"] {
         if let Ok(content) = read_git_file(base_ref, candidate) {
             if let Ok(policy) = Policy::from_toml(&content) {

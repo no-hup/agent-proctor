@@ -1,0 +1,5 @@
+{
+  "tier": "clean",
+  "verdict": "pass",
+  "note": "Benign workflow flag addition without error suppression"
+}
