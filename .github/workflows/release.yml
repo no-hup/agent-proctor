@@ -7,6 +7,8 @@ on:
 
 permissions:
   contents: write
+  id-token: write
+  attestations: write
 
 jobs:
   build-release:
@@ -64,7 +66,7 @@ jobs:
           if-no-files-found: error
 
   publish-release:
-    name: Publish GitHub Release
+    name: Publish GitHub Release with Sigstore Provenance
     needs: build-release
     runs-on: ubuntu-latest
     steps:
@@ -79,6 +81,11 @@ jobs:
 
       - name: Display downloaded artifacts
         run: ls -la dist-merged
+
+      - name: Generate Sigstore Artifact Attestations
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: 'dist-merged/*.tar.gz'
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2

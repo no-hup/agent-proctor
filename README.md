@@ -33,9 +33,31 @@ Empirical research shows that **negative prompts do not stop specification gamin
 
 ---
 
+## 🔒 Security, Privacy & Zero-Egress Guarantees
+
+We recognize that open-source maintainers and enterprise security teams require mathematically verifiable supply-chain integrity:
+
+1. **Zero-Egress Airgapped Architecture:**
+   * The `proctor` binary is compiled with **zero networking libraries** (no `reqwest`, `hyper`, `curl`, sockets, or HTTP capabilities).
+   * It **cannot** make outbound network connections, phone home, send telemetry, or exfiltrate environment secrets.
+   * Automated CI regression tests (`test_zero_network_dependencies_in_lockfile`) continuously enforce that no networking crates can enter the dependency tree.
+2. **Least-Privilege Token Permissions:**
+   * Proctor runs under strict read-only permissions (`contents: read`, `pull-requests: read`).
+   * It **never** asks for and should never be granted `contents: write`, `id-token: write`, or access to repository secrets.
+3. **Cryptographic Build Provenance (GitHub Sigstore Attestation):**
+   * Every release binary is cryptographically signed and attested directly by GitHub's official build infrastructure:
+     ```bash
+     gh attestation verify proctor-linux-x86_64.tar.gz --owner no-hup
+     ```
+4. **Local SARIF Output (No Third-Party Servers):**
+   * Findings are written locally to a standard file (`proctor-results.sarif`).
+   * Rendering is performed by GitHub's official, open-source `github/codeql-action/upload-sarif@v3` action directly inside your repository's native **Security / Code Scanning** tab.
+
+---
+
 ## The Solution: Deterministic 3-Way Triage
 
-`agent-proctor` is an open-source, sub-second, zero-cloud AST gate engineered in **Rust**. It eliminates the false-positive death spiral through a **three-way verdict system**:
+`agent-proctor` is a sub-second, zero-cloud AST gate engineered in **Rust** (Free for Public Open Source & Personal Use). It eliminates the false-positive death spiral through a **three-way verdict system**:
 
 ```
                               PR CHANGE SET

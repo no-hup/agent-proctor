@@ -1,6 +1,8 @@
 # agent-proctor GitHub Action
 
 [![Free for Open Source](https://img.shields.io/badge/License-Free%20for%20Open%20Source-blue.svg)](LICENSE)
+[![Zero Network Egress](https://img.shields.io/badge/Network-Zero--Egress%20Airgapped-success.svg)](#security-privacy--zero-egress-guarantees)
+[![GitHub Sigstore Attestation](https://img.shields.io/badge/Provenance-GitHub%20Sigstore%20Verified-blue.svg)](#cryptographic-build-provenance)
 [![Latency](https://img.shields.io/badge/Latency-%3C50ms-green.svg)]()
 [![Determinism](https://img.shields.io/badge/Engine-Zero--LLM%20Tree--sitter-orange.svg)]()
 
@@ -22,14 +24,28 @@ Negative prompts in `AGENT.md` or PR instructions **do not stop this behavior** 
 
 ---
 
-## The Solution: Deterministic PR Anticheat
+## 🔒 Security, Privacy & Zero-Egress Guarantees
 
-`agent-proctor` is a **deterministic, sub-50ms git PR integrity gate**. It uses Tree-sitter AST diffing to compare the semantic strength of tests *before* and *after* each pull request:
-* **Zero LLMs:** 100% deterministic, mathematically reproducible, zero prompt injection surface, and $0 model costs.
-* **Zero Telemetry:** The compiled binary executes locally inside your GitHub Actions runner. No code or metadata leaves your environment.
-* **Asymmetric Dual-Tier Triage:**
-  * **Guard Tier (Exit Code 2 / Hard BLOCK):** Policy tampering, CI sabotage (`|| true`), test deletions without removing production code, shadow mocks on the system under test.
-  * **Report Tier (Exit Code 0 Advisory / Exit Code 1 `--strict`):** Legitimate specification evolution. Allows normal human refactoring.
+We recognize that open-source maintainers must be vigilant about supply-chain integrity. `agent-proctor` is engineered with mathematically verifiable privacy guarantees:
+
+1. **Zero-Egress Airgapped Architecture:**
+   * The `proctor` binary is compiled with **zero networking libraries** (no `reqwest`, `hyper`, `curl`, sockets, or HTTP capabilities).
+   * It **cannot** make outbound connections, phone home, send telemetry, or exfiltrate environment variables.
+   * You can verify symbol isolation locally: `nm proctor | grep -i "socket\|connect\|http"` (returns 0 symbols).
+2. **Least-Privilege Token Permissions:**
+   * Proctor runs under strict read-only permissions (`contents: read`, `pull-requests: read`).
+   * It **never** asks for and should never be granted `contents: write`, `id-token: write`, or access to repository secrets.
+3. **Local SARIF Output (No Third-Party Servers):**
+   * Findings are written locally to a standard file (`proctor-results.sarif`).
+   * Rendering is performed by GitHub's official, open-source `github/codeql-action/upload-sarif@v3` action directly inside your repository's native **Security / Code Scanning** tab.
+
+### Cryptographic Build Provenance
+
+Every official `proctor` release binary is cryptographically signed and attested directly by GitHub's build infrastructure using **Sigstore / GitHub Artifact Attestations**. You can cryptographically verify that the binary was built cleanly on GitHub's official runners:
+
+```bash
+gh attestation verify proctor-linux-x86_64.tar.gz --owner no-hup
+```
 
 ---
 
@@ -87,6 +103,12 @@ For unattended, automated agent PRs (e.g. sweep bots, Devin, OpenHands), configu
 ```
 
 Under `--strict`, any assertion modifications coincident with production code changes require an explicit author acknowledgment or maintainer waiver before merging.
+
+---
+
+## Detection Rules & Specifications
+
+For the complete specification of all detection invariants (`PROCTOR-001` through `PROCTOR-007`), see our [Rules Catalog](RULES_CATALOG.md).
 
 ---
 
