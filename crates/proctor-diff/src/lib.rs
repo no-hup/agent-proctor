@@ -1,5 +1,6 @@
 use proctor_parse::{parse_javascript_source_file, parse_javascript_test_file, parse_python_source_file, parse_python_test_file, ParsedTest, ParsedTestFile, ParsedSourceFile};
 use std::collections::{HashMap, HashSet};
+use std::path::Path;
 
 /// A paired test between the base commit and head commit.
 #[derive(Debug, Clone)]
@@ -16,11 +17,13 @@ pub struct SemanticDiff {
     pub new_tests: Vec<ParsedTest>,
     pub base_sources: HashMap<String, ParsedSourceFile>,
     pub head_sources: HashMap<String, ParsedSourceFile>,
+    pub all_base_symbols: HashSet<String>,
     pub all_deleted_symbols: HashSet<String>,
     pub raw_base_files: HashMap<String, String>,
     pub raw_head_files: HashMap<String, String>,
     pub base_harness_mocks: Vec<proctor_parse::ParsedMock>,
     pub head_harness_mocks: Vec<proctor_parse::ParsedMock>,
+    pub parse_errors: Vec<(String, String)>,
 }
 
 impl SemanticDiff {
@@ -33,16 +36,27 @@ impl SemanticDiff {
         let mut head_tests_by_file = HashMap::new();
         let mut base_sources = HashMap::new();
         let mut head_sources = HashMap::new();
+        let mut parse_errors = Vec::new();
 
         // 1. Parse base files
         for (path, content) in base_files {
             if is_test_file(path) {
-                if let Ok(parsed) = parse_test(path, content) {
-                    base_tests_by_file.insert(path.clone(), parsed);
+                match parse_test(path, content) {
+                    Ok(parsed) => {
+                        base_tests_by_file.insert(path.clone(), parsed);
+                    }
+                    Err(e) => {
+                        parse_errors.push((path.clone(), format!("Base test parse error: {}", e)));
+                    }
                 }
             } else if is_source_file(path) {
-                if let Ok(parsed) = parse_source(path, content) {
-                    base_sources.insert(path.clone(), parsed);
+                match parse_source(path, content) {
+                    Ok(parsed) => {
+                        base_sources.insert(path.clone(), parsed);
+                    }
+                    Err(e) => {
+                        parse_errors.push((path.clone(), format!("Base source parse error: {}", e)));
+                    }
                 }
             }
         }
@@ -50,28 +64,58 @@ impl SemanticDiff {
         // 2. Parse head files
         for (path, content) in head_files {
             if is_test_file(path) {
-                if let Ok(parsed) = parse_test(path, content) {
-                    head_tests_by_file.insert(path.clone(), parsed);
+                match parse_test(path, content) {
+                    Ok(parsed) => {
+                        if parsed.has_syntax_error {
+                            parse_errors.push((path.clone(), "Syntax error detected in test file".to_string()));
+                        }
+                        head_tests_by_file.insert(path.clone(), parsed);
+                    }
+                    Err(e) => {
+                        parse_errors.push((path.clone(), format!("Head test parse error: {}", e)));
+                    }
                 }
             } else if is_source_file(path) {
-                if let Ok(parsed) = parse_source(path, content) {
-                    head_sources.insert(path.clone(), parsed);
+                match parse_source(path, content) {
+                    Ok(parsed) => {
+                        if parsed.has_syntax_error {
+                            parse_errors.push((path.clone(), "Syntax error detected in source file".to_string()));
+                        }
+                        head_sources.insert(path.clone(), parsed);
+                    }
+                    Err(e) => {
+                        parse_errors.push((path.clone(), format!("Head source parse error: {}", e)));
+                    }
                 }
             }
         }
 
-        // 3. Compute all deleted production symbols
+        // 3. Compute all deleted production symbols (both bare and qualified by module)
         let mut base_symbols = HashSet::new();
-        for src in base_sources.values() {
+        for (src_path, src) in &base_sources {
+            let mod_name = src_path
+                .trim_end_matches(".py")
+                .trim_end_matches(".js")
+                .trim_end_matches(".ts")
+                .trim_end_matches(".tsx")
+                .replace('/', ".");
             for sym in &src.defined_symbols {
                 base_symbols.insert(sym.clone());
+                base_symbols.insert(format!("{}.{}", mod_name, sym));
             }
         }
 
         let mut head_symbols = HashSet::new();
-        for src in head_sources.values() {
+        for (src_path, src) in &head_sources {
+            let mod_name = src_path
+                .trim_end_matches(".py")
+                .trim_end_matches(".js")
+                .trim_end_matches(".ts")
+                .trim_end_matches(".tsx")
+                .replace('/', ".");
             for sym in &src.defined_symbols {
                 head_symbols.insert(sym.clone());
+                head_symbols.insert(format!("{}.{}", mod_name, sym));
             }
         }
 
@@ -161,22 +205,48 @@ impl SemanticDiff {
             new_tests,
             base_sources,
             head_sources,
+            all_base_symbols: base_symbols,
             all_deleted_symbols,
             raw_base_files: base_files.clone(),
             raw_head_files: head_files.clone(),
             base_harness_mocks,
             head_harness_mocks,
+            parse_errors,
         })
     }
 
-    /// Evaluates if an assertion modification is justified by an orphaned symbol reference.
+    /// Evaluates if an assertion modification is justified by orphaned symbol references.
+    /// Strict semantics: require ALL referenced production symbols in the assertion to be deleted.
     pub fn is_reference_orphaned(&self, referenced_symbols: &[String]) -> bool {
-        for sym in referenced_symbols {
-            if self.all_deleted_symbols.contains(sym) {
-                return true;
-            }
+        if referenced_symbols.is_empty() {
+            return false;
         }
-        false
+
+        // Filter symbols that were actually defined in base production code
+        let prod_refs: Vec<&String> = referenced_symbols
+            .iter()
+            .filter(|sym| {
+                self.all_base_symbols.contains(*sym)
+                    || self
+                        .all_base_symbols
+                        .iter()
+                        .any(|b| b.ends_with(&format!(".{}", sym)))
+            })
+            .collect();
+
+        // If none of the symbols reference production code, it cannot be justified as orphaned
+        if prod_refs.is_empty() {
+            return false;
+        }
+
+        // Strict: ALL referenced production symbols must be deleted
+        prod_refs.iter().all(|sym| {
+            self.all_deleted_symbols.contains(*sym)
+                || self
+                    .all_deleted_symbols
+                    .iter()
+                    .any(|d| d.ends_with(&format!(".{}", sym)))
+        })
     }
 }
 
@@ -204,14 +274,44 @@ fn compute_assertion_overlap(
     }
 }
 
-fn is_test_file(path: &str) -> bool {
-    let p = path.to_lowercase();
-    p.contains("test") || p.contains("spec")
+pub fn is_test_file(path: &str) -> bool {
+    let p = Path::new(path);
+    let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
+    if !["py", "js", "ts", "jsx", "tsx", "mjs", "cjs"].contains(&ext) {
+        return false;
+    }
+
+    let file_name = p.file_name().and_then(|f| f.to_str()).unwrap_or("").to_lowercase();
+    let in_test_dir = p.components().any(|c| {
+        let s = c.as_os_str().to_string_lossy().to_lowercase();
+        s == "tests" || s == "test" || s == "__tests__"
+    });
+
+    if ext == "py" {
+        file_name.starts_with("test_")
+            || file_name.ends_with("_test.py")
+            || (in_test_dir && !file_name.starts_with("__"))
+    } else {
+        file_name.ends_with(".test.js")
+            || file_name.ends_with(".test.ts")
+            || file_name.ends_with(".test.jsx")
+            || file_name.ends_with(".test.tsx")
+            || file_name.ends_with(".test.mjs")
+            || file_name.ends_with(".test.cjs")
+            || file_name.ends_with(".spec.js")
+            || file_name.ends_with(".spec.ts")
+            || file_name.ends_with(".spec.jsx")
+            || file_name.ends_with(".spec.tsx")
+            || file_name.ends_with(".spec.mjs")
+            || file_name.ends_with(".spec.cjs")
+            || in_test_dir
+    }
 }
 
-fn is_source_file(path: &str) -> bool {
-    (path.ends_with(".py") || path.ends_with(".js") || path.ends_with(".ts") || path.ends_with(".tsx"))
-        && !is_test_file(path)
+pub fn is_source_file(path: &str) -> bool {
+    let p = Path::new(path);
+    let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
+    ["py", "js", "ts", "jsx", "tsx", "mjs", "cjs"].contains(&ext) && !is_test_file(path)
 }
 
 fn parse_test(path: &str, content: &str) -> Result<ParsedTestFile, String> {
@@ -274,5 +374,24 @@ class User:
         // The deleted assertion referenced `legacy_token`, which was deleted from production code
         let referenced = vec!["user".to_string(), "legacy_token".to_string()];
         assert_eq!(diff.is_reference_orphaned(&referenced), true);
+
+        // If it references a symbol that was NOT deleted (User), strict orphan checks require all to be deleted
+        let non_orphaned = vec!["User".to_string(), "legacy_token".to_string()];
+        assert_eq!(diff.is_reference_orphaned(&non_orphaned), false);
+    }
+
+    #[test]
+    fn test_accurate_test_file_heuristics() {
+        assert!(is_test_file("tests/test_auth.py"));
+        assert!(is_test_file("tests/unit/test_calc.py"));
+        assert!(is_test_file("app/foo_test.py"));
+        assert!(is_test_file("src/components/button.test.tsx"));
+        assert!(is_test_file("src/__tests__/utils.js"));
+
+        // Production files containing "test" or "spec" must NOT be treated as tests
+        assert!(!is_test_file("src/latest.py"));
+        assert!(!is_test_file("app/contestation.py"));
+        assert!(!is_test_file("src/special.ts"));
+        assert!(!is_test_file("lib/inspector.js"));
     }
 }

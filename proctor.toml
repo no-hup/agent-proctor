@@ -19,5 +19,8 @@ enforce_ci_tampering = true
 # Demote test skip/xfail to REVIEW when underlying production code is untouched (flakiness quarantine)
 skip_demote_to_review = true
 
-# In strict mode, REVIEW findings also exit with code 2 (BLOCK)
+# In strict mode, REVIEW findings also exit with code 1 (under report tier)
 strict_mode = false
+
+# Review and waiver attribution mode ("ack" | "second_reviewer" | "off")
+review_mode = "ack"

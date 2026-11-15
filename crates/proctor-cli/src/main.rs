@@ -1,9 +1,10 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
-use proctor_core::{Policy, Verdict};
+use proctor_core::{Policy, RuleId, RuleTier, ScanReport, Verdict};
 use proctor_diff::SemanticDiff;
 use proctor_rules::evaluate_rules;
 use std::collections::HashSet;
+use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
 mod git;
@@ -22,26 +23,26 @@ struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
 
-    #[arg(short, long, global = true, default_value = "main")]
+    #[arg(short, long, default_value = "main")]
     base: String,
 
-    #[arg(long, global = true)]
+    #[arg(long)]
     head: Option<String>,
 
-    #[arg(short, long, global = true, value_enum, default_value_t = OutputFormat::Pretty)]
+    #[arg(short, long, value_enum, default_value_t = OutputFormat::Pretty)]
     format: OutputFormat,
 
-    #[arg(long, global = true)]
+    #[arg(long)]
     sarif: Option<PathBuf>,
 
-    #[arg(long, global = true, value_delimiter = ',')]
-    waivers: Vec<String>,
+    #[arg(long, hide = true, value_delimiter = ',', env = "PROCTOR_VERIFIED_WAIVERS")]
+    verified_waivers: Vec<String>,
 
-    #[arg(long, global = true)]
+    #[arg(long)]
     strict: bool,
 
-    #[arg(long, global = true)]
-    probe: bool,
+    #[arg(long)]
+    experimental_probe: bool,
 }
 
 #[derive(Subcommand)]
@@ -60,14 +61,14 @@ enum Commands {
         #[arg(long)]
         sarif: Option<PathBuf>,
 
-        #[arg(long, value_delimiter = ',')]
-        waivers: Vec<String>,
+        #[arg(long, hide = true, value_delimiter = ',', env = "PROCTOR_VERIFIED_WAIVERS")]
+        verified_waivers: Vec<String>,
 
         #[arg(long)]
         strict: bool,
 
         #[arg(long)]
-        probe: bool,
+        experimental_probe: bool,
     },
     /// Run ephemeral mutation probe in an isolated git worktree
     Probe {
@@ -93,6 +94,23 @@ enum Commands {
 
         #[arg(short, long, value_enum, default_value_t = OutputFormat::Pretty)]
         format: OutputFormat,
+
+        #[arg(long)]
+        label: Option<PathBuf>,
+    },
+    /// Evaluate agent benchmark predictions or rollout trajectories (SWE-bench format)
+    Eval {
+        #[arg(long, default_value = "swebench")]
+        format: String,
+
+        #[arg(required = true)]
+        predictions: PathBuf,
+
+        #[arg(long)]
+        repos: Option<PathBuf>,
+
+        #[arg(short, long, default_value = "verdicts.jsonl")]
+        out: PathBuf,
     },
     /// Print version and supported language parsers
     Version,
@@ -112,7 +130,7 @@ fn main() -> Result<()> {
         Some(Commands::Version) => {
             println!("agent-proctor v0.1.0 (deterministic AST verification)");
             println!("Supported languages: Python (pytest/unittest), JavaScript/TypeScript (Jest/Vitest)");
-            println!("Engine: Tree-sitter 0.21, Blake3 cryptographic fingerprints");
+            println!("Engine: Tree-sitter 0.22, Blake3 cryptographic fingerprints");
             Ok(())
         }
         Some(Commands::Scan {
@@ -120,10 +138,18 @@ fn main() -> Result<()> {
             head,
             format,
             sarif,
-            waivers,
+            verified_waivers,
             strict,
-            probe,
-        }) => run_scan(&base, head.as_deref(), format, sarif, &waivers, strict, probe),
+            experimental_probe,
+        }) => run_scan(
+            &base,
+            head.as_deref(),
+            format,
+            sarif,
+            &verified_waivers,
+            strict,
+            experimental_probe,
+        ),
         Some(Commands::Probe {
             base,
             head,
@@ -131,15 +157,25 @@ fn main() -> Result<()> {
             format,
             sarif,
         }) => run_probe_cmd(&base, &head, max_mutants, format, sarif),
-        Some(Commands::Audit { limit, format }) => run_audit(limit, format),
+        Some(Commands::Audit {
+            limit,
+            format,
+            label,
+        }) => run_audit(limit, format, label),
+        Some(Commands::Eval {
+            format,
+            predictions,
+            repos,
+            out,
+        }) => run_eval(&format, &predictions, repos.as_deref(), &out),
         None => run_scan(
             &cli.base,
             cli.head.as_deref(),
             cli.format,
             cli.sarif,
-            &cli.waivers,
+            &cli.verified_waivers,
             cli.strict,
-            cli.probe,
+            cli.experimental_probe,
         ),
     }
 }
@@ -151,10 +187,16 @@ fn run_scan(
     sarif_path: Option<PathBuf>,
     waiver_vec: &[String],
     strict: bool,
-    probe: bool,
+    experimental_probe: bool,
 ) -> Result<()> {
-    // 1. Get changed files from git
-    let changed = match git::get_changed_files(base, head) {
+    // 1. Immutably anchor policy to the base ref
+    let mut policy = git::load_policy_from_base(base);
+    if strict {
+        policy.strict_mode = true;
+    }
+
+    // 2. Get changed files from git using two-dot diff
+    let mut changed = match git::get_changed_files(base, head) {
         Ok(c) => c,
         Err(e) => {
             // Fallback: try origin/<base> or HEAD~1
@@ -174,28 +216,43 @@ fn run_scan(
         }
     };
 
+    // Filter changed files against configured ignored_paths
+    git::filter_ignored_paths(&mut changed, &policy.ignored_paths);
+
     if changed.head_files.is_empty() && changed.base_files.is_empty() {
-        println!("proctor: No changes detected between {} and HEAD.", base);
+        if format == OutputFormat::Json {
+            let report = ScanReport {
+                schema_version: "1.0".to_string(),
+                verdict: Verdict::Pass,
+                findings: Vec::new(),
+            };
+            println!("{}", serde_json::to_string_pretty(&report)?);
+        } else {
+            println!("proctor: No changes detected between {} and HEAD.", base);
+        }
         std::process::exit(0);
     }
 
-    // 2. Build semantic diff
+    // 3. Build semantic diff
     let diff = SemanticDiff::build(&changed.base_files, &changed.head_files)
         .map_err(|e| anyhow::anyhow!("Semantic diff failed: {}", e))?;
 
-    // 3. Configure policy & waivers
-    let mut policy = Policy::discover();
-    if strict {
-        policy.strict_mode = true;
+    // 4. Configure verified waivers & acks
+    let mut accepted_waivers: HashSet<String> = waiver_vec.iter().cloned().collect();
+    if let Ok(env_waivers) = std::env::var("PROCTOR_VERIFIED_WAIVERS") {
+        for w in env_waivers.split(',') {
+            let trimmed = w.trim();
+            if !trimmed.is_empty() {
+                accepted_waivers.insert(trimmed.to_string());
+            }
+        }
     }
 
-    let accepted_waivers: HashSet<String> = waiver_vec.iter().cloned().collect();
-
-    // 4. Evaluate rules
+    // 5. Evaluate rules
     let mut findings = evaluate_rules(&diff, &policy, &accepted_waivers);
 
-    // 4b. Optional dynamic probe
-    if probe {
+    // 5b. Optional dynamic probe
+    if experimental_probe {
         println!("proctor: Running dynamic mutation probe in ephemeral worktree...");
         let head_ref = head.unwrap_or("HEAD");
         if let Ok(probe_results) = proctor_probe::run_probe(Path::new("."), head_ref, &diff, 3) {
@@ -207,21 +264,55 @@ fn run_scan(
         }
     }
 
-    // 5. Generate SARIF if requested
+    // 6. Generate SARIF if requested
     if let Some(path) = sarif_path {
         let sarif_val = sarif::generate_sarif(&findings);
         let sarif_str = serde_json::to_string_pretty(&sarif_val)?;
         std::fs::write(&path, sarif_str)?;
     }
 
-    // 6. Output findings based on requested format
+    // 7. Compute overall verdict & rule tiering
+    let has_guard_block = findings.iter().any(|f| {
+        f.tier == RuleTier::Guard || matches!(f.verdict, Verdict::Block { .. })
+    });
+    let has_report_review = findings.iter().any(|f| {
+        f.tier == RuleTier::Report || matches!(f.verdict, Verdict::Review { .. })
+    });
+
+    let overall_verdict = if has_guard_block {
+        Verdict::Block {
+            rule: findings
+                .iter()
+                .find(|f| matches!(f.verdict, Verdict::Block { .. }))
+                .map(|f| f.rule_id)
+                .unwrap_or(RuleId::AssertionLock),
+            evidence: "Hard guard policy constraints violated.".into(),
+        }
+    } else if has_report_review {
+        Verdict::Review {
+            finding_id: findings
+                .iter()
+                .find(|f| matches!(f.verdict, Verdict::Review { .. }))
+                .map(|f| f.id.clone())
+                .unwrap_or_default(),
+            evidence: "Specification modifications require review acknowledgement.".into(),
+        }
+    } else {
+        Verdict::Pass
+    };
+
+    // 8. Output findings based on requested format
     match format {
         OutputFormat::Pretty => {
             reporter::print_findings(&findings, base);
         }
         OutputFormat::Json => {
-            let json_str = serde_json::to_string_pretty(&findings)?;
-            println!("{}", json_str);
+            let report = ScanReport {
+                schema_version: "1.0".to_string(),
+                verdict: overall_verdict,
+                findings: findings.clone(),
+            };
+            println!("{}", serde_json::to_string_pretty(&report)?);
         }
         OutputFormat::Sarif => {
             let sarif_val = sarif::generate_sarif(&findings);
@@ -229,18 +320,17 @@ fn run_scan(
         }
     }
 
-    // 7. Compute exit code
-    let has_block = findings
-        .iter()
-        .any(|f| matches!(f.verdict, Verdict::Block { .. }));
-    let has_review = findings
-        .iter()
-        .any(|f| matches!(f.verdict, Verdict::Review { .. }));
-
-    if has_block || (strict && has_review) {
+    // 9. Compute exit code
+    // Guard tier: zero-tolerance, hard BLOCK (exit 2)
+    // Report tier: advisory receipts exit 0 by default; exit 1 only under --strict or strict_mode
+    if has_guard_block {
         std::process::exit(2);
-    } else if has_review {
-        std::process::exit(1);
+    } else if has_report_review {
+        if strict || policy.strict_mode {
+            std::process::exit(1);
+        } else {
+            std::process::exit(0);
+        }
     } else {
         std::process::exit(0);
     }
@@ -315,8 +405,11 @@ fn run_probe_cmd(
     }
 }
 
-fn run_audit(limit: usize, format: OutputFormat) -> Result<()> {
-    println!("proctor: Auditing last {} historical commits for test integrity & false-positive metrics...\n", limit);
+fn run_audit(limit: usize, format: OutputFormat, label_path: Option<PathBuf>) -> Result<()> {
+    println!(
+        "proctor: Auditing last {} historical commits for test integrity & false-positive metrics...\n",
+        limit
+    );
 
     let output = std::process::Command::new("git")
         .args(["log", &format!("-n{}", limit), "--format=%H"])
@@ -343,6 +436,14 @@ fn run_audit(limit: usize, format: OutputFormat) -> Result<()> {
     let mut block_commits = 0;
     let mut rule_counts: std::collections::HashMap<&'static str, usize> = std::collections::HashMap::new();
 
+    let mut label_file = if let Some(ref p) = label_path {
+        let mut f = std::fs::File::create(p)?;
+        writeln!(f, "commit,verdict,findings_count,rule_codes")?;
+        Some(f)
+    } else {
+        None
+    };
+
     for commit in &commits {
         let parent = format!("{}^", commit);
         if let Ok(changed) = git::get_changed_files(&parent, Some(commit)) {
@@ -360,20 +461,42 @@ fn run_audit(limit: usize, format: OutputFormat) -> Result<()> {
                     .iter()
                     .any(|f| matches!(f.verdict, Verdict::Review { .. }));
 
+                let rule_codes: Vec<&str> = findings.iter().map(|f| f.rule_id.code()).collect();
+
                 for f in &findings {
                     *rule_counts.entry(f.rule_id.code()).or_insert(0) += 1;
                 }
 
-                if has_block {
+                let verdict_label = if has_block {
                     block_commits += 1;
+                    "block"
                 } else if has_review {
                     review_commits += 1;
+                    "review"
                 } else {
                     clean_commits += 1;
+                    "pass"
+                };
+
+                if let Some(ref mut f) = label_file {
+                    writeln!(
+                        f,
+                        "{},{},{},{}",
+                        commit,
+                        verdict_label,
+                        findings.len(),
+                        rule_codes.join(";")
+                    )?;
                 }
             }
         }
     }
+
+    let block_pct = if total_audited > 0 {
+        (block_commits as f64 / total_audited as f64) * 100.0
+    } else {
+        0.0
+    };
 
     match format {
         OutputFormat::Pretty => {
@@ -390,11 +513,6 @@ fn run_audit(limit: usize, format: OutputFormat) -> Result<()> {
             } else {
                 0.0
             };
-            let block_pct = if total_audited > 0 {
-                (block_commits as f64 / total_audited as f64) * 100.0
-            } else {
-                0.0
-            };
             println!("  Clean (PASS)    : {} ({:.1}%)", clean_commits, pass_pct);
             println!("  Spec Revisions  : {} ({:.1}%) [REVIEW]", review_commits, review_pct);
             println!("  Violations      : {} ({:.1}%) [BLOCK]", block_commits, block_pct);
@@ -407,9 +525,12 @@ fn run_audit(limit: usize, format: OutputFormat) -> Result<()> {
                 }
             }
             println!(
-                "\n  Estimated Historical False-Positive Rate: {:.2}%\n",
+                "\n  Block Rate on Merged History: {:.2}%\n",
                 block_pct
             );
+            if let Some(p) = label_path {
+                println!("  Label CSV exported to: {}", p.display());
+            }
         }
         OutputFormat::Json => {
             let res = serde_json::json!({
@@ -418,7 +539,7 @@ fn run_audit(limit: usize, format: OutputFormat) -> Result<()> {
                 "review_required": review_commits,
                 "blocked": block_commits,
                 "rule_breakdown": rule_counts,
-                "false_positive_estimate_pct": if total_audited > 0 { (block_commits as f64 / total_audited as f64) * 100.0 } else { 0.0 },
+                "block_rate_on_merged_history": block_pct,
             });
             println!("{}", serde_json::to_string_pretty(&res)?);
         }
@@ -434,4 +555,148 @@ fn run_audit(limit: usize, format: OutputFormat) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Evaluates benchmark predictions or trajectories (e.g. SWE-bench).
+fn run_eval(
+    format: &str,
+    predictions_path: &Path,
+    repos_dir: Option<&Path>,
+    out_path: &Path,
+) -> Result<()> {
+    if format != "swebench" {
+        anyhow::bail!("Unsupported eval format '{}'. Currently supported: 'swebench'", format);
+    }
+
+    println!("proctor eval: Loading predictions from {}", predictions_path.display());
+    let file = std::fs::File::open(predictions_path)?;
+    let reader = BufReader::new(file);
+
+    let mut out_file = std::fs::File::create(out_path)?;
+    let mut total = 0;
+    let mut clean_pass = 0;
+    let mut review_count = 0;
+    let mut block_count = 0;
+
+    let policy = Policy::default();
+    let empty_waivers = HashSet::new();
+
+    for line_res in reader.lines() {
+        let line = line_res?;
+        if line.trim().is_empty() {
+            continue;
+        }
+
+        let entry: serde_json::Value = serde_json::from_str(&line)?;
+        let instance_id = entry
+            .get("instance_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown")
+            .to_string();
+
+        let model_patch = entry
+            .get("model_patch")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+
+        total += 1;
+
+        // Parse patch into changed base and head files
+        let (base_files, head_files) = parse_patch_to_files(model_patch, repos_dir, &instance_id);
+
+        let findings = if base_files.is_empty() && head_files.is_empty() {
+            Vec::new()
+        } else if let Ok(diff) = SemanticDiff::build(&base_files, &head_files) {
+            evaluate_rules(&diff, &policy, &empty_waivers)
+        } else {
+            Vec::new()
+        };
+
+        let has_block = findings.iter().any(|f| {
+            f.tier == RuleTier::Guard || matches!(f.verdict, Verdict::Block { .. })
+        });
+        let has_review = findings.iter().any(|f| {
+            f.tier == RuleTier::Report || matches!(f.verdict, Verdict::Review { .. })
+        });
+
+        let verdict_str = if has_block {
+            block_count += 1;
+            "block"
+        } else if has_review {
+            review_count += 1;
+            "review"
+        } else {
+            clean_pass += 1;
+            "pass"
+        };
+
+        let verdict_record = serde_json::json!({
+            "instance_id": instance_id,
+            "verdict": verdict_str,
+            "findings_count": findings.len(),
+            "findings": findings,
+        });
+
+        writeln!(out_file, "{}", serde_json::to_string(&verdict_record)?)?;
+    }
+
+    println!("\n{}", "─".repeat(60));
+    println!("🧪 proctor eval: Evaluation Summary");
+    println!("  Total Instances : {}", total);
+    println!("  Clean (PASS)    : {}", clean_pass);
+    println!("  Review Required : {}", review_count);
+    println!("  Reward-Hacked   : {} (BLOCKED)", block_count);
+    println!("  Results written : {}", out_path.display());
+    println!("{}\n", "─".repeat(60));
+
+    Ok(())
+}
+
+/// Parses a unified git diff patch into base and head in-memory files.
+fn parse_patch_to_files(
+    patch: &str,
+    _repos_dir: Option<&Path>,
+    _instance_id: &str,
+) -> (std::collections::HashMap<String, String>, std::collections::HashMap<String, String>) {
+    let mut base_files = std::collections::HashMap::new();
+    let mut head_files = std::collections::HashMap::new();
+
+    let mut current_file: Option<String> = None;
+    let mut current_base_lines = Vec::new();
+    let mut current_head_lines = Vec::new();
+
+    for line in patch.lines() {
+        if line.starts_with("diff --git ") {
+            if let Some(file) = current_file.take() {
+                base_files.insert(file.clone(), current_base_lines.join("\n"));
+                head_files.insert(file, current_head_lines.join("\n"));
+                current_base_lines.clear();
+                current_head_lines.clear();
+            }
+        } else if line.starts_with("+++ b/") {
+            current_file = Some(line.trim_start_matches("+++ b/").to_string());
+        } else if line.starts_with("--- a/") && current_file.is_none() {
+            current_file = Some(line.trim_start_matches("--- a/").to_string());
+        } else if current_file.is_some() {
+            if let Some(stripped) = line.strip_prefix('+') {
+                if !line.starts_with("+++") {
+                    current_head_lines.push(stripped.to_string());
+                }
+            } else if let Some(stripped) = line.strip_prefix('-') {
+                if !line.starts_with("---") {
+                    current_base_lines.push(stripped.to_string());
+                }
+            } else if let Some(stripped) = line.strip_prefix(' ') {
+                current_base_lines.push(stripped.to_string());
+                current_head_lines.push(stripped.to_string());
+            }
+        }
+    }
+
+    if let Some(file) = current_file {
+        base_files.insert(file.clone(), current_base_lines.join("\n"));
+        head_files.insert(file, current_head_lines.join("\n"));
+    }
+
+    (base_files, head_files)
 }

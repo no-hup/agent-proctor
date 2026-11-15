@@ -12,6 +12,7 @@ pub struct ParsedTestFile {
     pub tests: Vec<ParsedTest>,
     pub harness_mocks: Vec<ParsedMock>,
     pub imports: Vec<String>,
+    pub has_syntax_error: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -43,6 +44,7 @@ pub struct ParsedSourceFile {
     pub file_path: String,
     pub defined_symbols: Vec<String>,
     pub string_literals: Vec<String>,
+    pub has_syntax_error: bool,
 }
 
 #[cfg(test)]

@@ -95,7 +95,7 @@ pub fn print_findings(findings: &[Finding], base_ref: &str) {
         if let Verdict::Review { finding_id, .. } = &f.verdict {
             println!(
                 "    Waiver   : Comment on GitHub PR -> {}",
-                format!("proctor: accept {}", finding_id).bold().green()
+                format!("proctor: ack {}", finding_id).bold().green()
             );
         } else if let Verdict::Block { .. } = &f.verdict {
             println!(

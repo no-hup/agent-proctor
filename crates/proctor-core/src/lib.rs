@@ -87,6 +87,16 @@ pub enum AssertionStrength {
     Exact = 2,
 }
 
+/// Product tier classification for findings and rules.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RuleTier {
+    /// Hard boundary: zero tolerance, always blocks PR (exit 2).
+    Guard,
+    /// Advisory/attribution: exits 0 by default, exits 1 under --strict.
+    Report,
+}
+
 /// Rule identifiers implemented in agent-proctor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum RuleId {
@@ -102,6 +112,8 @@ pub enum RuleId {
     SnapshotIntegrity,
     /// F5: Table-driven or parametrized test row deleted.
     ParametrizeRowDrop,
+    /// F6: proctor.toml policy configuration modified in PR.
+    PolicyTamper,
 }
 
 impl RuleId {
@@ -113,6 +125,7 @@ impl RuleId {
             RuleId::RunnerConfigTamper => "PROCTOR-004",
             RuleId::SnapshotIntegrity => "PROCTOR-005",
             RuleId::ParametrizeRowDrop => "PROCTOR-006",
+            RuleId::PolicyTamper => "PROCTOR-007",
         }
     }
 
@@ -124,6 +137,19 @@ impl RuleId {
             RuleId::RunnerConfigTamper => "Test Runner Configuration Weakened",
             RuleId::SnapshotIntegrity => "Snapshot File Corrupted or Shrunk",
             RuleId::ParametrizeRowDrop => "Parametrized Test Case Removed",
+            RuleId::PolicyTamper => "Policy Configuration Tampered in PR",
+        }
+    }
+
+    pub fn default_tier(&self) -> RuleTier {
+        match self {
+            RuleId::AssertionLock => RuleTier::Report,
+            RuleId::ShadowMock => RuleTier::Report,
+            RuleId::CiWorkflowSabotage => RuleTier::Guard,
+            RuleId::RunnerConfigTamper => RuleTier::Guard,
+            RuleId::SnapshotIntegrity => RuleTier::Guard,
+            RuleId::ParametrizeRowDrop => RuleTier::Guard,
+            RuleId::PolicyTamper => RuleTier::Guard,
         }
     }
 }
@@ -134,6 +160,7 @@ pub struct Finding {
     /// Blake3-derived 12-char fingerprint for stable waiver matching.
     pub id: String,
     pub rule_id: RuleId,
+    pub tier: RuleTier,
     pub verdict: Verdict,
     pub file_path: String,
     pub line_number: Option<usize>,
@@ -154,6 +181,27 @@ impl Finding {
     }
 }
 
+/// Review and waiver attribution mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewMode {
+    /// Attributed acknowledgement (`proctor: ack <id>`) accepted from PR author or collaborator.
+    #[default]
+    Ack,
+    /// Strict requirement: must be accepted by a second authenticated collaborator, not author.
+    SecondReviewer,
+    /// Waivers disabled.
+    Off,
+}
+
+/// Structured JSON scan report format.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScanReport {
+    pub schema_version: String,
+    pub verdict: Verdict,
+    pub findings: Vec<Finding>,
+}
+
 /// Repository configuration policy, loaded from upstream protected base branch or proctor.toml.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Policy {
@@ -167,6 +215,8 @@ pub struct Policy {
     pub strict_mode: bool,
     #[serde(default = "default_true")]
     pub skip_demote_to_review: bool,
+    #[serde(default)]
+    pub review_mode: ReviewMode,
 }
 
 fn default_true() -> bool {
@@ -189,6 +239,7 @@ impl Default for Policy {
             enforce_ci_tampering: true,
             strict_mode: false,
             skip_demote_to_review: true,
+            review_mode: ReviewMode::default(),
         }
     }
 }
@@ -259,11 +310,20 @@ mod tests {
 allow_mocks = ["app.services.*", "infra.*"]
 ignored_paths = ["dist/**"]
 strict_mode = true
+review_mode = "second_reviewer"
 "#;
         let policy = Policy::from_toml(toml_str).unwrap();
         assert_eq!(policy.allow_mocks.len(), 2);
         assert!(policy.strict_mode);
         assert!(policy.enforce_ci_tampering); // default true
         assert!(policy.skip_demote_to_review); // default true
+        assert_eq!(policy.review_mode, ReviewMode::SecondReviewer);
+    }
+
+    #[test]
+    fn test_rule_tiers() {
+        assert_eq!(RuleId::CiWorkflowSabotage.default_tier(), RuleTier::Guard);
+        assert_eq!(RuleId::PolicyTamper.default_tier(), RuleTier::Guard);
+        assert_eq!(RuleId::AssertionLock.default_tier(), RuleTier::Report);
     }
 }

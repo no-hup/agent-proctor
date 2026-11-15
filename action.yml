@@ -16,10 +16,10 @@ inputs:
     required: false
     default: ${{ github.event.pull_request.head.sha || github.sha || 'HEAD' }}
   strict:
-    description: 'Treat REVIEW findings as hard BLOCK (exit 2)'
+    description: 'Treat REVIEW findings as hard BLOCK (exit 1 under report tier)'
     required: false
     default: 'false'
-  probe:
+  experimental-probe:
     description: 'Run ephemeral mutation probe in an isolated git worktree'
     required: false
     default: 'false'
@@ -31,6 +31,10 @@ inputs:
     description: 'GitHub token for reviewer waiver verification'
     required: false
     default: ${{ github.token }}
+  version:
+    description: 'agent-proctor release version to download'
+    required: false
+    default: 'v0.1.0'
 
 runs:
   using: 'composite'
@@ -45,7 +49,7 @@ runs:
           git fetch --depth=1 origin "${{ inputs.head-ref }}" || true
         fi
 
-    - name: Verify GitHub-attested reviewer waivers
+    - name: Verify GitHub-attested reviewer waivers & acks
       id: waivers
       shell: bash
       env:
@@ -63,8 +67,37 @@ runs:
           echo "verified_waivers=" >> $GITHUB_OUTPUT
         fi
 
+    - name: Install agent-proctor release binary
+      shell: bash
+      run: |
+        if command -v proctor &> /dev/null; then
+          exit 0
+        fi
+        OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
+        ARCH="$(uname -m)"
+        if [ "$ARCH" = "x86_64" ]; then
+          TARGET="x86_64"
+        elif [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ]; then
+          TARGET="aarch64"
+        else
+          TARGET="x86_64"
+        fi
+
+        URL="https://github.com/no-hup/agent-proctor/releases/download/${{ inputs.version }}/proctor-${OS}-${TARGET}.tar.gz"
+        mkdir -p /tmp/proctor-bin
+        if curl -sLf "$URL" -o /tmp/proctor.tar.gz 2>/dev/null; then
+          tar -xzf /tmp/proctor.tar.gz -C /tmp/proctor-bin
+          chmod +x /tmp/proctor-bin/proctor
+          echo "/tmp/proctor-bin" >> $GITHUB_PATH
+          echo "proctor: Downloaded precompiled binary from $URL"
+        else
+          echo "proctor: Precompiled release not available; falling back to source build."
+        fi
+
     - name: Run agent-proctor scan
       shell: bash
+      env:
+        PROCTOR_VERIFIED_WAIVERS: ${{ steps.waivers.outputs.verified_waivers }}
       run: |
         ARGS="--base ${{ inputs.base-ref }} --head ${{ inputs.head-ref }} --sarif ${{ inputs.sarif-file }}"
         
@@ -72,12 +105,8 @@ runs:
           ARGS="$ARGS --strict"
         fi
         
-        if [ "${{ inputs.probe }}" = "true" ]; then
-          ARGS="$ARGS --probe"
-        fi
-        
-        if [ -n "${{ steps.waivers.outputs.verified_waivers }}" ]; then
-          ARGS="$ARGS --waivers ${{ steps.waivers.outputs.verified_waivers }}"
+        if [ "${{ inputs.experimental-probe }}" = "true" ]; then
+          ARGS="$ARGS --experimental-probe"
         fi
 
         if command -v proctor &> /dev/null; then

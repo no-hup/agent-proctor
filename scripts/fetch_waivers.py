@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-Fetches and verifies GitHub-attested PR review waivers from the GitHub REST API.
+Fetches and verifies GitHub-attested PR review waivers and acknowledgements from the GitHub REST API.
 
-Enforces:
-1. Reviewer must have OWNER, MEMBER, or COLLABORATOR permission.
-2. Reviewer must NOT be the author of the pull request.
-3. Reviewer must not be a bot.
-4. Extracts 12-char Blake3 finding IDs from 'proctor: accept <id>' comments.
+Supports Policy review_mode:
+- "ack" (default): Attributed acknowledgements (`proctor: ack <id>` or `proctor: accept <id>`)
+  are accepted from the PR author or any repository collaborator/member/owner.
+- "second_reviewer": Enforces strict non-author review from an authenticated collaborator/member/owner.
+- "off": Waivers are disabled.
 """
 
 import json
@@ -15,10 +15,13 @@ import re
 import sys
 import urllib.request
 
-WAIVER_PATTERN = re.compile(r"proctor:\s*accept\s+([a-f0-9]{12})", re.IGNORECASE)
+WAIVER_PATTERN = re.compile(r"proctor:\s*(?:accept|ack)\s+([a-f0-9]{12})", re.IGNORECASE)
 ALLOWED_ASSOCIATIONS = {"OWNER", "MEMBER", "COLLABORATOR"}
 
-def fetch_waivers(repo: str, pr_number: str, token: str) -> list[str]:
+def fetch_waivers(repo: str, pr_number: str, token: str, review_mode: str) -> list[str]:
+    if review_mode == "off":
+        return []
+
     headers = {
         "Accept": "application/vnd.github.v3+json",
         "User-Agent": "agent-proctor",
@@ -60,12 +63,16 @@ def fetch_waivers(repo: str, pr_number: str, token: str) -> list[str]:
             user_type = user.get("type", "")
             assoc = item.get("author_association", "")
 
-            # Security checks: non-bot, non-author, authorized role
-            if user_login == pr_author:
-                continue
+            # Never allow bots to sign off waivers
             if user_type == "Bot":
                 continue
-            if assoc not in ALLOWED_ASSOCIATIONS:
+
+            # In strict second_reviewer mode, PR author cannot approve their own waivers
+            if review_mode == "second_reviewer" and user_login == pr_author:
+                continue
+
+            # Ensure user has write/collaborator permissions (unless it's author acknowledging under ack mode)
+            if assoc not in ALLOWED_ASSOCIATIONS and user_login != pr_author:
                 continue
 
             body = item.get("body", "")
@@ -78,12 +85,13 @@ def main():
     repo = os.environ.get("GITHUB_REPOSITORY", "")
     pr_number = os.environ.get("PR_NUMBER", "")
     token = os.environ.get("GITHUB_TOKEN", "")
+    review_mode = os.environ.get("PROCTOR_REVIEW_MODE", "ack").strip().lower()
 
     if not repo or not pr_number:
         print("")
         return
 
-    waivers = fetch_waivers(repo, pr_number, token)
+    waivers = fetch_waivers(repo, pr_number, token, review_mode)
     print(",".join(waivers))
 
 if __name__ == "__main__":

@@ -13,30 +13,113 @@ pub fn evaluate_rules(
 ) -> Vec<Finding> {
     let mut findings = Vec::new();
 
-    // 1. PROCTOR-001: Assertion Lock & Deletion & Anti-Drift & Skip/Xfail
+    // 1. PROCTOR-007: Policy Tampering (Cannot modify proctor.toml in PR)
+    evaluate_policy_tamper(diff, &mut findings);
+
+    // 2. Parse Errors: Fail-closed on corrupted files or Tree-sitter failures
+    evaluate_parse_errors(diff, &mut findings);
+
+    // 3. PROCTOR-001: Assertion Lock & Deletion & Anti-Drift & Skip/Xfail
     evaluate_assertion_lock(diff, policy, &mut findings);
 
-    // 2. PROCTOR-002: Shadow Mocks (including harness mocks and in-repo paths)
+    // 4. PROCTOR-002: Shadow Mocks (including harness mocks and in-repo paths)
     evaluate_shadow_mocks(diff, policy, &mut findings);
 
-    // 3. PROCTOR-003: CI Workflow Sabotage
+    // 5. PROCTOR-003: CI Workflow Sabotage
     if policy.enforce_ci_tampering {
         evaluate_ci_sabotage(diff, &mut findings);
     }
 
-    // 4. PROCTOR-004: Runner Config Tamper
+    // 6. PROCTOR-004: Runner Config Tamper
     evaluate_runner_config(diff, &mut findings);
 
-    // 5. PROCTOR-005: Snapshot Integrity
+    // 7. PROCTOR-005: Snapshot Integrity
     evaluate_snapshot_integrity(diff, &mut findings);
 
-    // 6. PROCTOR-006: Parametrize Row Drops
+    // 8. PROCTOR-006: Parametrize Row Drops
     evaluate_parametrize_rows(diff, &mut findings);
 
-    // Filter out findings accepted by an authorized human reviewer via waivers
+    // Filter out findings accepted by an authorized human reviewer via waivers / acks
     findings.retain(|f| !accepted_waivers.contains(&f.id));
 
     findings
+}
+
+/// PROCTOR-007: Guard against modifying or adding policy files in the PR diff.
+fn evaluate_policy_tamper(diff: &SemanticDiff, findings: &mut Vec<Finding>) {
+    let policy_files = ["proctor.toml", ".proctor.toml"];
+    for file in &policy_files {
+        let in_head = diff.raw_head_files.contains_key(*file);
+        let in_base = diff.raw_base_files.contains_key(*file);
+
+        if in_head != in_base {
+            let id = Finding::compute_id(RuleId::PolicyTamper, file, "policy_file_status_changed");
+            findings.push(Finding {
+                id,
+                rule_id: RuleId::PolicyTamper,
+                tier: RuleTier::Guard,
+                verdict: Verdict::Block {
+                    rule: RuleId::PolicyTamper,
+                    evidence: format!("Policy file '{}' was added or deleted in PR diff", file),
+                },
+                file_path: (*file).to_string(),
+                line_number: None,
+                test_name: None,
+                message: format!(
+                    "Policy file '{}' cannot be added or deleted in a pull request diff.",
+                    file
+                ),
+                evidence: format!("Diff touches {}", file),
+            });
+        } else if in_head && in_base {
+            let base_content = &diff.raw_base_files[*file];
+            let head_content = &diff.raw_head_files[*file];
+            if base_content != head_content {
+                let id = Finding::compute_id(RuleId::PolicyTamper, file, "policy_content_modified");
+                findings.push(Finding {
+                    id,
+                    rule_id: RuleId::PolicyTamper,
+                    tier: RuleTier::Guard,
+                    verdict: Verdict::Block {
+                        rule: RuleId::PolicyTamper,
+                        evidence: format!("Policy file '{}' was modified in PR diff", file),
+                    },
+                    file_path: (*file).to_string(),
+                    line_number: None,
+                    test_name: None,
+                    message: format!(
+                        "Policy file '{}' cannot be modified in a pull request diff without authorized waiver.",
+                        file
+                    ),
+                    evidence: format!("Diff modifies {}", file),
+                });
+            }
+        }
+    }
+}
+
+/// Fail-closed reporting on Tree-sitter parse or syntax errors.
+fn evaluate_parse_errors(diff: &SemanticDiff, findings: &mut Vec<Finding>) {
+    for (path, err_msg) in &diff.parse_errors {
+        let id = Finding::compute_id(RuleId::AssertionLock, path, "parse_error");
+        findings.push(Finding {
+            id: id.clone(),
+            rule_id: RuleId::AssertionLock,
+            tier: RuleTier::Report,
+            verdict: Verdict::Review {
+                finding_id: id,
+                evidence: format!("Tree-sitter parse error in {}: {}", path, err_msg),
+            },
+            file_path: path.clone(),
+            line_number: None,
+            test_name: None,
+            message: format!(
+                "File '{}' could not be parsed safely ({}); review required.",
+                path, err_msg
+            ),
+            evidence: err_msg.clone(),
+        });
+    }
 }
 
 /// PROCTOR-001: Checks for assertion deletions, downgrades, skips, and un-orphaned test removals.
@@ -64,7 +147,7 @@ fn evaluate_assertion_lock(diff: &SemanticDiff, policy: &Policy, findings: &mut 
                     .any(|sym| modified_prod_symbols.contains(sym.as_str()))
             });
 
-            let (verdict, message) = if !diff.head_sources.is_empty()
+            let (verdict, tier, message) = if !diff.head_sources.is_empty()
                 && (test_targets_modified_prod || !policy.skip_demote_to_review)
             {
                 (
@@ -75,6 +158,7 @@ fn evaluate_assertion_lock(diff: &SemanticDiff, policy: &Policy, findings: &mut 
                             test_name
                         ),
                     },
+                    RuleTier::Guard,
                     format!(
                         "Test '{}' tests modified production code but was marked as skipped (@pytest.mark.skip / it.skip) in head.",
                         test_name
@@ -89,6 +173,7 @@ fn evaluate_assertion_lock(diff: &SemanticDiff, policy: &Policy, findings: &mut 
                             test_name
                         ),
                     },
+                    RuleTier::Report,
                     format!(
                         "Test '{}' marked as skipped (@pytest.mark.skip / it.skip). Requires reviewer waiver to confirm quarantine.",
                         test_name
@@ -99,6 +184,7 @@ fn evaluate_assertion_lock(diff: &SemanticDiff, policy: &Policy, findings: &mut 
             findings.push(Finding {
                 id,
                 rule_id: RuleId::AssertionLock,
+                tier,
                 verdict,
                 file_path: head_test.id.file_path.clone(),
                 line_number: None,
@@ -108,9 +194,10 @@ fn evaluate_assertion_lock(diff: &SemanticDiff, policy: &Policy, findings: &mut 
             });
         }
 
-        // 1a(ii). Check for modified, weakened, or deleted assertions
+        // 1a(ii). Check for modified, weakened, or deleted assertions via AssertionStrength lattice
         let head_texts: HashSet<&str> =
             head_test.assertions.iter().map(|a| a.text.as_str()).collect();
+        let head_max_strength = head_test.assertions.iter().map(|a| a.strength).max();
 
         for base_assert in &base_test.assertions {
             if !head_texts.contains(base_assert.text.as_str()) {
@@ -124,10 +211,26 @@ fn evaluate_assertion_lock(diff: &SemanticDiff, policy: &Policy, findings: &mut 
                         &base_assert.text,
                     );
 
+                    let was_weakened = match head_max_strength {
+                        Some(max_s) => max_s < base_assert.strength,
+                        None => true,
+                    };
+
                     // Check linkage: did any production source file change?
                     let has_production_changes = !diff.head_sources.is_empty();
 
-                    let (verdict, message) = if has_production_changes {
+                    let (verdict, tier, message) = if has_production_changes {
+                        let msg = if was_weakened {
+                            format!(
+                                "Assertion weakened in test '{}' ({:?} -> {:?}) without orphaned symbol justification.",
+                                test_name, base_assert.strength, head_max_strength
+                            )
+                        } else {
+                            format!(
+                                "Assertion modified in test '{}' without orphaned symbol justification. Requires reviewer waiver.",
+                                test_name
+                            )
+                        };
                         (
                             Verdict::Review {
                                 finding_id: id.clone(),
@@ -136,10 +239,8 @@ fn evaluate_assertion_lock(diff: &SemanticDiff, policy: &Policy, findings: &mut 
                                     base_assert.text
                                 ),
                             },
-                            format!(
-                                "Assertion modified or removed in test '{}' without orphaned symbol justification. Requires reviewer waiver.",
-                                test_name
-                            ),
+                            RuleTier::Report,
+                            msg,
                         )
                     } else {
                         (
@@ -150,6 +251,7 @@ fn evaluate_assertion_lock(diff: &SemanticDiff, policy: &Policy, findings: &mut 
                                     base_assert.text
                                 ),
                             },
+                            RuleTier::Guard,
                             format!(
                                 "Assertion modified in test '{}' while production code was untouched.",
                                 test_name
@@ -160,6 +262,7 @@ fn evaluate_assertion_lock(diff: &SemanticDiff, policy: &Policy, findings: &mut 
                     findings.push(Finding {
                         id,
                         rule_id: RuleId::AssertionLock,
+                        tier,
                         verdict,
                         file_path: head_test.id.file_path.clone(),
                         line_number: Some(base_assert.line),
@@ -199,10 +302,11 @@ fn evaluate_assertion_lock(diff: &SemanticDiff, policy: &Policy, findings: &mut 
                                 expected_lit,
                             );
                             findings.push(Finding {
-                                id: id.clone(),
+                                id,
                                 rule_id: RuleId::AssertionLock,
-                                verdict: Verdict::Review {
-                                    finding_id: id,
+                                tier: RuleTier::Guard,
+                                verdict: Verdict::Block {
+                                    rule: RuleId::AssertionLock,
                                     evidence: format!(
                                         "Expected literal '{}' shifted and mirrors newly added production literal in {}",
                                         expected_lit, src_path
@@ -224,7 +328,7 @@ fn evaluate_assertion_lock(diff: &SemanticDiff, policy: &Policy, findings: &mut 
         }
     }
 
-    // 1c. Whole test deletions
+    // 1c. Whole test deletions (Guard tier: always BLOCK)
     for del_test in &diff.deleted_tests {
         let test_name = del_test.id.canonical_name();
         let justified = del_test
@@ -237,6 +341,7 @@ fn evaluate_assertion_lock(diff: &SemanticDiff, policy: &Policy, findings: &mut 
             findings.push(Finding {
                 id,
                 rule_id: RuleId::AssertionLock,
+                tier: RuleTier::Guard,
                 verdict: Verdict::Block {
                     rule: RuleId::AssertionLock,
                     evidence: format!(
@@ -257,6 +362,70 @@ fn evaluate_assertion_lock(diff: &SemanticDiff, policy: &Policy, findings: &mut 
     }
 }
 
+/// Helper to test if a mock target is an in-repo symbol or file
+fn is_in_repo_target(
+    target: &str,
+    in_repo_symbols: &HashSet<String>,
+) -> bool {
+    let target_lower = target.to_lowercase();
+    let target_clean = target_lower
+        .trim_start_matches("./")
+        .trim_start_matches("../")
+        .replace('/', ".");
+
+    // 1. Check in-repo symbols from diff
+    if in_repo_symbols
+        .iter()
+        .any(|sym| target_clean.contains(sym.as_str()) || sym.contains(target_clean.as_str()))
+    {
+        return true;
+    }
+
+    // 2. Relative paths are always in-repo
+    if target.starts_with("./") || target.starts_with("../") {
+        return true;
+    }
+
+    // 3. Check filesystem existence for target module (e.g. app.billing -> app/billing.py)
+    let as_path = target_clean.replace('.', "/");
+    if Path::new(&format!("{}.py", as_path)).exists()
+        || Path::new(&format!("{}.ts", as_path)).exists()
+        || Path::new(&format!("{}.js", as_path)).exists()
+        || Path::new(&as_path).exists()
+    {
+        return true;
+    }
+
+    // 4. Common in-repo prefixes
+    if target_clean.starts_with("app.")
+        || target_clean.starts_with("src.")
+        || target_clean.starts_with("lib.")
+    {
+        return true;
+    }
+
+    false
+}
+
+/// Pattern matching for allow_mocks: rejects bare wildcard `*` and empty patterns.
+fn is_mock_allowed(target: &str, allow_mocks: &[String]) -> bool {
+    let target_lower = target.to_lowercase();
+    allow_mocks.iter().any(|pattern| {
+        let p = pattern.trim();
+        if p.is_empty() || p == "*" {
+            return false; // Bare wildcard or empty pattern is rejected
+        }
+        if let Some(prefix) = p.strip_suffix('*') {
+            if prefix.is_empty() {
+                return false;
+            }
+            target_lower.starts_with(&prefix.to_lowercase())
+        } else {
+            target_lower == p.to_lowercase()
+        }
+    })
+}
+
 /// PROCTOR-002: Detects mocks added to in-repo production code (per-test and top-of-file harness).
 fn evaluate_shadow_mocks(diff: &SemanticDiff, policy: &Policy, findings: &mut Vec<Finding>) {
     // Collect all in-repo defined production symbols and modules from diff
@@ -273,48 +442,6 @@ fn evaluate_shadow_mocks(diff: &SemanticDiff, policy: &Policy, findings: &mut Ve
         in_repo_symbols.insert(mod_path.to_lowercase());
     }
 
-    // Helper to test if a mock target is an in-repo symbol or file
-    let check_mock_target = |target: &str| -> bool {
-        let target_lower = target.to_lowercase();
-        let target_clean = target_lower
-            .trim_start_matches("./")
-            .trim_start_matches("../")
-            .replace('/', ".");
-
-        // 1. Check in-repo symbols from diff
-        if in_repo_symbols
-            .iter()
-            .any(|sym| target_clean.contains(sym.as_str()) || sym.contains(target_clean.as_str()))
-        {
-            return true;
-        }
-
-        // 2. Relative paths are always in-repo
-        if target.starts_with("./") || target.starts_with("../") {
-            return true;
-        }
-
-        // 3. Check filesystem existence for target module (e.g. app.billing -> app/billing.py)
-        let as_path = target_clean.replace('.', "/");
-        if Path::new(&format!("{}.py", as_path)).exists()
-            || Path::new(&format!("{}.ts", as_path)).exists()
-            || Path::new(&format!("{}.js", as_path)).exists()
-            || Path::new(&as_path).exists()
-        {
-            return true;
-        }
-
-        // 4. Common in-repo prefixes
-        if target_clean.starts_with("app.")
-            || target_clean.starts_with("src.")
-            || target_clean.starts_with("lib.")
-        {
-            return true;
-        }
-
-        false
-    };
-
     // Check per-test mocks
     for pair in &diff.paired_tests {
         let base_mock_targets: HashSet<&str> =
@@ -322,17 +449,9 @@ fn evaluate_shadow_mocks(diff: &SemanticDiff, policy: &Policy, findings: &mut Ve
 
         for mock in &pair.head_test.mocks {
             if !base_mock_targets.contains(mock.target.as_str()) {
-                let target_lower = mock.target.to_lowercase();
+                let allowed = is_mock_allowed(&mock.target, &policy.allow_mocks);
 
-                let allowed = policy.allow_mocks.iter().any(|pattern| {
-                    if pattern.ends_with('*') {
-                        target_lower.starts_with(pattern.trim_end_matches('*'))
-                    } else {
-                        target_lower == *pattern
-                    }
-                });
-
-                if !allowed && check_mock_target(&mock.target) {
+                if !allowed && is_in_repo_target(&mock.target, &in_repo_symbols) {
                     let test_name = pair.head_test.id.canonical_name();
                     let id = Finding::compute_id(RuleId::ShadowMock, &test_name, &mock.target);
 
@@ -341,27 +460,34 @@ fn evaluate_shadow_mocks(diff: &SemanticDiff, policy: &Policy, findings: &mut Ve
                         target_clean.contains(sym.as_str()) || sym.contains(target_clean.as_str())
                     });
 
-                    let verdict = if is_direct_diff_target || policy.strict_mode {
-                        Verdict::Block {
-                            rule: RuleId::ShadowMock,
-                            evidence: format!(
-                                "Shadow mock targeting modified in-repo production symbol: '{}'",
-                                mock.target
-                            ),
-                        }
+                    let (verdict, tier) = if is_direct_diff_target || policy.strict_mode {
+                        (
+                            Verdict::Block {
+                                rule: RuleId::ShadowMock,
+                                evidence: format!(
+                                    "Shadow mock targeting modified in-repo production symbol: '{}'",
+                                    mock.target
+                                ),
+                            },
+                            RuleTier::Guard,
+                        )
                     } else {
-                        Verdict::Review {
-                            finding_id: id.clone(),
-                            evidence: format!(
-                                "Mock targeting internal collaborator: '{}'. Reviewer waiver required.",
-                                mock.target
-                            ),
-                        }
+                        (
+                            Verdict::Review {
+                                finding_id: id.clone(),
+                                evidence: format!(
+                                    "Mock targeting internal collaborator: '{}'. Reviewer waiver required.",
+                                    mock.target
+                                ),
+                            },
+                            RuleTier::Report,
+                        )
                     };
 
                     findings.push(Finding {
                         id,
                         rule_id: RuleId::ShadowMock,
+                        tier,
                         verdict,
                         file_path: pair.head_test.id.file_path.clone(),
                         line_number: Some(mock.line),
@@ -386,44 +512,43 @@ fn evaluate_shadow_mocks(diff: &SemanticDiff, policy: &Policy, findings: &mut Ve
 
     for mock in &diff.head_harness_mocks {
         if !base_harness_targets.contains(mock.target.as_str()) {
-            let target_lower = mock.target.to_lowercase();
+            let allowed = is_mock_allowed(&mock.target, &policy.allow_mocks);
 
-            let allowed = policy.allow_mocks.iter().any(|pattern| {
-                if pattern.ends_with('*') {
-                    target_lower.starts_with(pattern.trim_end_matches('*'))
-                } else {
-                    target_lower == *pattern
-                }
-            });
-
-            if !allowed && check_mock_target(&mock.target) {
+            if !allowed && is_in_repo_target(&mock.target, &in_repo_symbols) {
                 let id = Finding::compute_id(RuleId::ShadowMock, "harness_mock", &mock.target);
                 let target_clean = mock.target.to_lowercase();
                 let is_direct_diff_target = in_repo_symbols.iter().any(|sym| {
                     target_clean.contains(sym.as_str()) || sym.contains(target_clean.as_str())
                 });
 
-                let verdict = if is_direct_diff_target || policy.strict_mode {
-                    Verdict::Block {
-                        rule: RuleId::ShadowMock,
-                        evidence: format!(
-                            "Top-level harness mock targeting modified in-repo code: '{}'",
-                            mock.target
-                        ),
-                    }
+                let (verdict, tier) = if is_direct_diff_target || policy.strict_mode {
+                    (
+                        Verdict::Block {
+                            rule: RuleId::ShadowMock,
+                            evidence: format!(
+                                "Top-level harness mock targeting modified in-repo code: '{}'",
+                                mock.target
+                            ),
+                        },
+                        RuleTier::Guard,
+                    )
                 } else {
-                    Verdict::Review {
-                        finding_id: id.clone(),
-                        evidence: format!(
-                            "Top-level harness mock targeting in-repo internal module: '{}'",
-                            mock.target
-                        ),
-                    }
+                    (
+                        Verdict::Review {
+                            finding_id: id.clone(),
+                            evidence: format!(
+                                "Top-level harness mock targeting in-repo internal module: '{}'",
+                                mock.target
+                            ),
+                        },
+                        RuleTier::Report,
+                    )
                 };
 
                 findings.push(Finding {
                     id,
                     rule_id: RuleId::ShadowMock,
+                    tier,
                     verdict,
                     file_path: "test_harness".to_string(),
                     line_number: Some(mock.line),
@@ -439,7 +564,8 @@ fn evaluate_shadow_mocks(diff: &SemanticDiff, policy: &Policy, findings: &mut Ve
     }
 }
 
-/// PROCTOR-003: Detects sabotage in CI workflow files.
+/// PROCTOR-003: Diff-aware detection of sabotage in CI workflow files.
+/// Only scans newly added or modified lines in workflow files.
 fn evaluate_ci_sabotage(diff: &SemanticDiff, findings: &mut Vec<Finding>) {
     let workflow_patterns = [".github/workflows", ".gitlab-ci.yml", ".circleci/config.yml"];
 
@@ -450,29 +576,8 @@ fn evaluate_ci_sabotage(diff: &SemanticDiff, findings: &mut Vec<Finding>) {
         }
 
         let base_content = diff.raw_base_files.get(head_path).map(|s| s.as_str()).unwrap_or("");
+        let base_lines: HashSet<&str> = base_content.lines().map(|l| l.trim()).collect();
 
-        // Check for continue-on-error: true added
-        if head_content.contains("continue-on-error: true")
-            && !base_content.contains("continue-on-error: true")
-        {
-            let id = Finding::compute_id(RuleId::CiWorkflowSabotage, head_path, "continue-on-error");
-            findings.push(Finding {
-                id,
-                rule_id: RuleId::CiWorkflowSabotage,
-                verdict: Verdict::Block {
-                    rule: RuleId::CiWorkflowSabotage,
-                    evidence: "Injected 'continue-on-error: true' into CI workflow".into(),
-                },
-                file_path: head_path.clone(),
-                line_number: None,
-                test_name: None,
-                message: "CI workflow modified to ignore step failures (continue-on-error: true)."
-                    .into(),
-                evidence: "continue-on-error: true".into(),
-            });
-        }
-
-        // Check for shell cheats and workflow disablement
         let shell_cheats = [
             "|| true",
             "|| exit 0",
@@ -485,25 +590,53 @@ fn evaluate_ci_sabotage(diff: &SemanticDiff, findings: &mut Vec<Finding>) {
             "pytest --ignore",
             "echo ok",
         ];
-        for cheat in &shell_cheats {
-            if head_content.contains(cheat) && !base_content.contains(cheat) {
-                let id = Finding::compute_id(RuleId::CiWorkflowSabotage, head_path, cheat);
+
+        for (line_idx, line) in head_content.lines().enumerate() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || base_lines.contains(trimmed) {
+                continue; // Line was already present in base - not a new sabotage in this PR
+            }
+
+            if trimmed.contains("continue-on-error: true") {
+                let id = Finding::compute_id(RuleId::CiWorkflowSabotage, head_path, "continue-on-error");
                 findings.push(Finding {
                     id,
                     rule_id: RuleId::CiWorkflowSabotage,
+                    tier: RuleTier::Guard,
                     verdict: Verdict::Block {
                         rule: RuleId::CiWorkflowSabotage,
-                        evidence: format!("Injected shell suppression '{}' into CI workflow", cheat),
+                        evidence: format!("Injected 'continue-on-error: true' at line {}", line_idx + 1),
                     },
                     file_path: head_path.clone(),
-                    line_number: None,
+                    line_number: Some(line_idx + 1),
                     test_name: None,
-                    message: format!(
-                        "CI workflow sabotaged with error masking or test exclusion: '{}'",
-                        cheat
-                    ),
-                    evidence: (*cheat).to_string(),
+                    message: "CI workflow modified to ignore step failures (continue-on-error: true)."
+                        .into(),
+                    evidence: trimmed.to_string(),
                 });
+            }
+
+            for cheat in &shell_cheats {
+                if trimmed.contains(cheat) {
+                    let id = Finding::compute_id(RuleId::CiWorkflowSabotage, head_path, cheat);
+                    findings.push(Finding {
+                        id,
+                        rule_id: RuleId::CiWorkflowSabotage,
+                        tier: RuleTier::Guard,
+                        verdict: Verdict::Block {
+                            rule: RuleId::CiWorkflowSabotage,
+                            evidence: format!("Injected shell suppression '{}' at line {}", cheat, line_idx + 1),
+                        },
+                        file_path: head_path.clone(),
+                        line_number: Some(line_idx + 1),
+                        test_name: None,
+                        message: format!(
+                            "CI workflow sabotaged with error masking or test exclusion: '{}'",
+                            cheat
+                        ),
+                        evidence: trimmed.to_string(),
+                    });
+                }
             }
         }
     }
@@ -544,6 +677,7 @@ fn evaluate_runner_config(diff: &SemanticDiff, findings: &mut Vec<Finding>) {
                 findings.push(Finding {
                     id,
                     rule_id: RuleId::RunnerConfigTamper,
+                    tier: RuleTier::Guard,
                     verdict: Verdict::Block {
                         rule: RuleId::RunnerConfigTamper,
                         evidence: format!("Test runner flag '{}' added to ignore tests", flag),
@@ -579,6 +713,7 @@ fn evaluate_snapshot_integrity(diff: &SemanticDiff, findings: &mut Vec<Finding>)
                     findings.push(Finding {
                         id,
                         rule_id: RuleId::SnapshotIntegrity,
+                        tier: RuleTier::Guard,
                         verdict: Verdict::Block {
                             rule: RuleId::SnapshotIntegrity,
                             evidence: format!(
@@ -599,6 +734,7 @@ fn evaluate_snapshot_integrity(diff: &SemanticDiff, findings: &mut Vec<Finding>)
                 findings.push(Finding {
                     id,
                     rule_id: RuleId::SnapshotIntegrity,
+                    tier: RuleTier::Guard,
                     verdict: Verdict::Block {
                         rule: RuleId::SnapshotIntegrity,
                         evidence: format!("Snapshot file '{}' deleted", base_path),
@@ -631,6 +767,7 @@ fn evaluate_parametrize_rows(diff: &SemanticDiff, findings: &mut Vec<Finding>) {
             findings.push(Finding {
                 id,
                 rule_id: RuleId::ParametrizeRowDrop,
+                tier: RuleTier::Guard,
                 verdict: Verdict::Block {
                     rule: RuleId::ParametrizeRowDrop,
                     evidence: format!(
@@ -680,7 +817,8 @@ def test_calc():
         let findings = evaluate_rules(&diff, &policy, &waivers);
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].rule_id, RuleId::AssertionLock);
-        matches!(findings[0].verdict, Verdict::Block { .. });
+        assert_eq!(findings[0].tier, RuleTier::Guard);
+        assert!(matches!(findings[0].verdict, Verdict::Block { .. }));
     }
 
     #[test]
@@ -707,7 +845,8 @@ def test_tax():
         let findings = evaluate_rules(&diff, &policy, &waivers);
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].rule_id, RuleId::AssertionLock);
-        matches!(findings[0].verdict, Verdict::Block { .. });
+        assert_eq!(findings[0].tier, RuleTier::Guard);
+        assert!(matches!(findings[0].verdict, Verdict::Block { .. }));
     }
 
     #[test]
@@ -745,6 +884,7 @@ def calculate_tax(amount):
         let findings = evaluate_rules(&diff, &policy, &waivers);
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].rule_id, RuleId::AssertionLock);
+        assert_eq!(findings[0].tier, RuleTier::Guard);
         assert!(matches!(findings[0].verdict, Verdict::Block { .. }));
     }
 
@@ -774,6 +914,7 @@ def test_tax():
         let findings = evaluate_rules(&diff, &policy, &waivers);
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].rule_id, RuleId::AssertionLock);
+        assert_eq!(findings[0].tier, RuleTier::Report);
         assert!(matches!(findings[0].verdict, Verdict::Review { .. }));
     }
 
@@ -833,6 +974,7 @@ class User:
         let findings = evaluate_rules(&diff, &policy, &waivers);
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].rule_id, RuleId::CiWorkflowSabotage);
+        assert_eq!(findings[0].tier, RuleTier::Guard);
     }
 
     #[test]
@@ -867,7 +1009,8 @@ def charge_card():
         let findings = evaluate_rules(&diff, &policy, &waivers);
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].rule_id, RuleId::ShadowMock);
-        matches!(findings[0].verdict, Verdict::Block { .. });
+        assert_eq!(findings[0].tier, RuleTier::Guard);
+        assert!(matches!(findings[0].verdict, Verdict::Block { .. }));
     }
 
     #[test]
@@ -929,6 +1072,7 @@ def test_double(x, expected):
         let findings = evaluate_rules(&diff, &policy, &waivers);
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].rule_id, RuleId::ParametrizeRowDrop);
+        assert_eq!(findings[0].tier, RuleTier::Guard);
     }
 
     #[test]
@@ -952,6 +1096,41 @@ def test_double(x, expected):
         let findings = evaluate_rules(&diff, &policy, &waivers);
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].rule_id, RuleId::RunnerConfigTamper);
+        assert_eq!(findings[0].tier, RuleTier::Guard);
+    }
+
+    #[test]
+    fn test_policy_tamper_detected() {
+        let mut base_files = HashMap::new();
+        base_files.insert(
+            "proctor.toml".to_string(),
+            "allow_mocks = [\"app.clients.*\"]\n".to_string(),
+        );
+
+        let mut head_files = HashMap::new();
+        head_files.insert(
+            "proctor.toml".to_string(),
+            "allow_mocks = [\"*\"]\n".to_string(),
+        );
+
+        let diff = SemanticDiff::build(&base_files, &head_files).unwrap();
+        let policy = Policy::default();
+        let waivers = HashSet::new();
+
+        let findings = evaluate_rules(&diff, &policy, &waivers);
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].rule_id, RuleId::PolicyTamper);
+        assert_eq!(findings[0].tier, RuleTier::Guard);
+        assert!(matches!(findings[0].verdict, Verdict::Block { .. }));
+    }
+
+    #[test]
+    fn test_bare_wildcard_mock_rejected() {
+        let mut policy = Policy::default();
+        policy.allow_mocks = vec!["*".to_string()]; // Invalid bare wildcard
+
+        assert!(!is_mock_allowed("app.billing", &policy.allow_mocks));
+        assert!(!is_mock_allowed("stripe", &policy.allow_mocks));
     }
 
     #[test]

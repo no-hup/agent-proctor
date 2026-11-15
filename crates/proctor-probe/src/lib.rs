@@ -9,7 +9,7 @@ pub use runner::{execute_probe_run, ProbeOutcome};
 pub use sandbox::WorktreeGuard;
 
 use anyhow::Result;
-use proctor_core::{Finding, RuleId, Verdict};
+use proctor_core::{Finding, RuleId, RuleTier, Verdict};
 use proctor_diff::SemanticDiff;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -33,6 +33,7 @@ impl ProbeResult {
             Some(Finding {
                 id: id.clone(),
                 rule_id: RuleId::AssertionLock,
+                tier: RuleTier::Report,
                 verdict: Verdict::Review {
                     finding_id: id,
                     evidence: format!(

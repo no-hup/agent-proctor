@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use proctor_core::Policy;
 use std::collections::HashMap;
 use std::path::Path;
 use std::process::Command;
@@ -9,13 +10,14 @@ pub struct ChangedFiles {
 }
 
 /// Resolves the changed files between base_ref and head_ref (or working tree).
+/// Uses two-dot diff (`base..head`) to avoid shallow-clone merge-base crashes in CI.
 pub fn get_changed_files(base_ref: &str, head_ref: Option<&str>) -> Result<ChangedFiles> {
     // 1. Get list of changed/added/modified/deleted files
     let mut cmd = Command::new("git");
     cmd.arg("diff").arg("--name-only").arg("--no-renames");
 
     if let Some(head) = head_ref {
-        cmd.arg(format!("{}...{}", base_ref, head));
+        cmd.arg(format!("{}..{}", base_ref, head));
     } else {
         cmd.arg(base_ref);
     }
@@ -66,7 +68,8 @@ pub fn get_changed_files(base_ref: &str, head_ref: Option<&str>) -> Result<Chang
     })
 }
 
-fn read_git_file(git_ref: &str, file_path: &str) -> Result<String> {
+/// Reads a file from a specific git ref using `git show <git_ref>:<file_path>`.
+pub fn read_git_file(git_ref: &str, file_path: &str) -> Result<String> {
     let output = Command::new("git")
         .arg("show")
         .arg(format!("{}:{}", git_ref, file_path))
@@ -77,4 +80,47 @@ fn read_git_file(git_ref: &str, file_path: &str) -> Result<String> {
     } else {
         anyhow::bail!("File not present at ref {}", git_ref)
     }
+}
+
+/// Reads proctor.toml strictly from the protected base ref to prevent PR tampering.
+pub fn load_policy_from_base(base_ref: &str) -> Policy {
+    for candidate in &["proctor.toml", ".proctor.toml"] {
+        if let Ok(content) = read_git_file(base_ref, candidate) {
+            if let Ok(policy) = Policy::from_toml(&content) {
+                return policy;
+            }
+        }
+    }
+    Policy::discover()
+}
+
+/// Filters changed files against the repository's configured ignored_paths.
+pub fn filter_ignored_paths(changed: &mut ChangedFiles, ignored_patterns: &[String]) {
+    let is_ignored = |path: &str| -> bool {
+        for pattern in ignored_patterns {
+            let p = pattern.trim();
+            if p.is_empty() {
+                continue;
+            }
+            if let Some(prefix) = p.strip_suffix("/**") {
+                if path == prefix || path.starts_with(&format!("{}/", prefix)) {
+                    return true;
+                }
+            } else if let Some(prefix) = p.strip_suffix("/*") {
+                if path == prefix || path.starts_with(&format!("{}/", prefix)) {
+                    return true;
+                }
+            } else if p.ends_with('*') {
+                if path.starts_with(p.trim_end_matches('*')) {
+                    return true;
+                }
+            } else if path == p {
+                return true;
+            }
+        }
+        false
+    };
+
+    changed.base_files.retain(|path, _| !is_ignored(path));
+    changed.head_files.retain(|path, _| !is_ignored(path));
 }

@@ -144,17 +144,28 @@ fn test_regression_skip_quarantine_routes_to_review() {
     let quarantined_test = "@pytest.mark.skip(reason=\"flaky\")\ndef test_flaky():\n    assert ping() == True\n";
     fs::write(repo_path.join("tests/test_flaky.py"), quarantined_test).unwrap();
 
+    // Under --strict mode, routes to REVIEW (exit 1), not BLOCK (exit 2)
     let proctor_bin = env!("CARGO_BIN_EXE_proctor");
-    let output = Command::new(proctor_bin)
+    let output_strict = Command::new(proctor_bin)
+        .current_dir(repo_path)
+        .args(&["scan", "--base", "HEAD", "--strict"])
+        .output()
+        .unwrap();
+
+    assert_eq!(output_strict.status.code(), Some(1));
+    let stdout_strict = String::from_utf8_lossy(&output_strict.stdout);
+    assert!(stdout_strict.contains("REVIEW REQUIRED"));
+
+    // Under default advisory mode, report tier exits 0 with attributed findings
+    let output_default = Command::new(proctor_bin)
         .current_dir(repo_path)
         .args(&["scan", "--base", "HEAD"])
         .output()
         .unwrap();
 
-    // Standard run routes to REVIEW (exit 1), not BLOCK (exit 2)
-    assert_eq!(output.status.code(), Some(1));
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("REVIEW REQUIRED"));
+    assert_eq!(output_default.status.code(), Some(0));
+    let stdout_default = String::from_utf8_lossy(&output_default.stdout);
+    assert!(stdout_default.contains("REVIEW REQUIRED"));
 }
 
 #[test]

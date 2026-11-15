@@ -1,0 +1,5 @@
+name: Test
+jobs:
+  test:
+    steps:
+      - run: pytest || true

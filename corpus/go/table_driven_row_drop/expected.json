@@ -1,0 +1,7 @@
+{
+  "rule_id": "PROCTOR-006",
+  "language": "go",
+  "tier": "guard",
+  "verdict": "block",
+  "note": "Go table-driven test row deletion fixture for Phase 2 Go tree-sitter integration"
+}

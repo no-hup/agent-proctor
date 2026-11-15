@@ -7,7 +7,7 @@
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
 [![crates.io](https://img.shields.io/crates/v/agent-proctor.svg)](https://crates.io/crates/agent-proctor)
 
-> **Supported Languages (v0.1):** Python (`pytest`, `unittest`) and JavaScript/TypeScript (`Jest`, `Vitest`). Go, Java, and Rust parser support are on the active roadmap.
+> **Supported Languages (v0.1):** Python (`pytest`, `unittest`) and JavaScript/TypeScript (`Jest`, `Vitest`).
 
 ---
 
@@ -71,14 +71,8 @@ Empirical research shows that **negative prompts do not stop specification gamin
 ### Installation
 
 ```bash
-# Via Cargo
+# Build from source or install via Cargo
 cargo install agent-proctor
-
-# Via Python / pip
-pip install agent-proctor
-
-# Via npm / npx
-npx agent-proctor scan
 ```
 
 ### Run Locally on Current Branch
@@ -177,14 +171,14 @@ Stop agents from cheating *before* code is ever committed to GitHub:
 ```bash
 #!/usr/bin/env bash
 # Runs before Claude claims completion
-REPORT=$(proctor scan --json --base origin/main)
+REPORT=$(proctor scan --format json --base origin/main)
 STATUS=$(echo "$REPORT" | jq -r '.verdict.status')
 
-if [ "$STATUS" = "block" ] || [ "$STATUS" = "review" ]; then
-  echo "AgentProctor Integrity Check Failed:"
+if [ "$STATUS" = "block" ]; then
+  echo "AgentProctor Integrity Check Failed (Hard Guard Violation):"
   echo "$REPORT" | jq -r '.findings[] | "- \(.rule_id): \(.message)"'
   echo "Restore the deleted/weakened assertions or justify them before completing."
-  exit 1
+  exit 2
 fi
 ```
 
@@ -197,23 +191,23 @@ fi
 * **`PROCTOR-003` (CI Workflow Sabotage)**: Blocks injection of `|| true`, `continue-on-error: true`, or step deletions on test runner steps.
 * **`PROCTOR-004` (Runner Config Tamper)**: Blocks coverage threshold drops (`fail_under`) or `--ignore` flags in `pytest.ini`, `jest.config.js`, etc.
 * **`PROCTOR-005` (Snapshot Integrity)**: Catches deleted snapshots, snapshots shrinking by $>50\%$, or snapshots containing error literals.
-* **`PROCTOR-006` (Parametrize Row Drop)**: Detects deleted rows in `@pytest.mark.parametrize` and Go table-driven tests.
+* **`PROCTOR-006` (Parametrize Row Drop)**: Detects deleted rows in `@pytest.mark.parametrize` and table-driven tests.
+* **`PROCTOR-007` (Policy Tamper)**: Blocks any PR diff that modifies, adds, or deletes `proctor.toml` without authorized base-branch merge.
 
 ---
 
-## GitHub-Attested Human Waivers
+## Attributed Acknowledgements & Review Waivers
 
 In-diff comments (`# proctor: allow`) can be forged by autonomous agents. `agent-proctor` validates waivers strictly through **authenticated GitHub PR review comments**:
 
 ```text
-proctor: accept 7a9f2b1c4e8d
+proctor: ack 7a9f2b1c4e8d
 ```
 
-A waiver is valid in CI **if and only if**:
-1. The comment user is **not** the PR author or any committer on `HEAD`.
-2. The user is **not a bot**.
-3. The user has **OWNER, MEMBER, or COLLABORATOR permissions** on the repository.
-4. The 12-character Blake3 finding fingerprint matches the AST delta exactly.
+Configured via `review_mode` in `proctor.toml`:
+1. `review_mode = "ack"` (default): Accepts attributed acknowledgement comments (`proctor: ack <id>`) from either the PR author or any repository collaborator.
+2. `review_mode = "second_reviewer"`: Strictly requires sign-off from an authenticated collaborator or owner who is not the PR author.
+3. `review_mode = "off"`: Disables waiver processing.
 
 When running in GitHub Actions, `agent-proctor` automatically renders a live findings table and waiver instructions directly to `$GITHUB_STEP_SUMMARY`, ensuring developers and reviewers have zero-friction copy-paste waiver commands even on fork PRs.
 

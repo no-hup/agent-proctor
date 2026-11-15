@@ -24,6 +24,7 @@ pub fn parse_javascript_test_file(
         .ok_or_else(|| "Failed to parse JS/TS source".to_string())?;
 
     let root = tree.root_node();
+    let has_syntax_error = root.has_error();
     let mut tests = Vec::new();
     let mut harness_mocks = Vec::new();
     let mut imports = Vec::new();
@@ -35,6 +36,7 @@ pub fn parse_javascript_test_file(
         tests,
         harness_mocks,
         imports,
+        has_syntax_error,
     })
 }
 
@@ -60,6 +62,7 @@ pub fn parse_javascript_source_file(
         .ok_or_else(|| "Failed to parse JS/TS source".to_string())?;
 
     let root = tree.root_node();
+    let has_syntax_error = root.has_error();
     let mut defined_symbols = Vec::new();
     let mut string_literals = Vec::new();
 
@@ -69,6 +72,7 @@ pub fn parse_javascript_source_file(
         file_path: file_path.to_string(),
         defined_symbols,
         string_literals,
+        has_syntax_error,
     })
 }
 
