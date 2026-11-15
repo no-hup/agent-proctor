@@ -14,7 +14,7 @@ pub fn evaluate_rules(
     let mut findings = Vec::new();
 
     // 1. PROCTOR-001: Assertion Lock & Deletion & Anti-Drift & Skip/Xfail
-    evaluate_assertion_lock(diff, &mut findings);
+    evaluate_assertion_lock(diff, policy, &mut findings);
 
     // 2. PROCTOR-002: Shadow Mocks (including harness mocks and in-repo paths)
     evaluate_shadow_mocks(diff, policy, &mut findings);
@@ -40,7 +40,7 @@ pub fn evaluate_rules(
 }
 
 /// PROCTOR-001: Checks for assertion deletions, downgrades, skips, and un-orphaned test removals.
-fn evaluate_assertion_lock(diff: &SemanticDiff, findings: &mut Vec<Finding>) {
+fn evaluate_assertion_lock(diff: &SemanticDiff, policy: &Policy, findings: &mut Vec<Finding>) {
     // 1a. Paired test assertion analysis
     for pair in &diff.paired_tests {
         let base_test = &pair.base_test;
@@ -50,23 +50,60 @@ fn evaluate_assertion_lock(diff: &SemanticDiff, findings: &mut Vec<Finding>) {
         // 1a(i). Check for skip / xfail injection
         if !base_test.is_skipped && head_test.is_skipped {
             let id = Finding::compute_id(RuleId::AssertionLock, &test_name, "test_skipped");
+
+            // Check if production code modified in this PR intersects with the test's subject
+            let modified_prod_symbols: HashSet<&str> = diff
+                .head_sources
+                .values()
+                .flat_map(|s| s.defined_symbols.iter().map(|sym| sym.as_str()))
+                .collect();
+
+            let test_targets_modified_prod = base_test.assertions.iter().any(|a| {
+                a.referenced_symbols
+                    .iter()
+                    .any(|sym| modified_prod_symbols.contains(sym.as_str()))
+            });
+
+            let (verdict, message) = if !diff.head_sources.is_empty()
+                && (test_targets_modified_prod || !policy.skip_demote_to_review)
+            {
+                (
+                    Verdict::Block {
+                        rule: RuleId::AssertionLock,
+                        evidence: format!(
+                            "Test '{}' exercising modified production code was skipped/xfailed",
+                            test_name
+                        ),
+                    },
+                    format!(
+                        "Test '{}' tests modified production code but was marked as skipped (@pytest.mark.skip / it.skip) in head.",
+                        test_name
+                    ),
+                )
+            } else {
+                (
+                    Verdict::Review {
+                        finding_id: id.clone(),
+                        evidence: format!(
+                            "Test '{}' was skipped/xfailed. Requires reviewer acceptance to confirm quarantine.",
+                            test_name
+                        ),
+                    },
+                    format!(
+                        "Test '{}' marked as skipped (@pytest.mark.skip / it.skip). Requires reviewer waiver to confirm quarantine.",
+                        test_name
+                    ),
+                )
+            };
+
             findings.push(Finding {
                 id,
                 rule_id: RuleId::AssertionLock,
-                verdict: Verdict::Block {
-                    rule: RuleId::AssertionLock,
-                    evidence: format!(
-                        "Test '{}' was active in base but skipped/xfailed in head",
-                        test_name
-                    ),
-                },
+                verdict,
                 file_path: head_test.id.file_path.clone(),
                 line_number: None,
                 test_name: Some(test_name.clone()),
-                message: format!(
-                    "Active test '{}' in base was marked as skipped (@pytest.mark.skip / it.skip) in head while production code still exists.",
-                    test_name
-                ),
+                message,
                 evidence: "Skipped / xfailed test".into(),
             });
         }
@@ -298,16 +335,34 @@ fn evaluate_shadow_mocks(diff: &SemanticDiff, policy: &Policy, findings: &mut Ve
                 if !allowed && check_mock_target(&mock.target) {
                     let test_name = pair.head_test.id.canonical_name();
                     let id = Finding::compute_id(RuleId::ShadowMock, &test_name, &mock.target);
+
+                    let target_clean = mock.target.to_lowercase();
+                    let is_direct_diff_target = in_repo_symbols.iter().any(|sym| {
+                        target_clean.contains(sym.as_str()) || sym.contains(target_clean.as_str())
+                    });
+
+                    let verdict = if is_direct_diff_target || policy.strict_mode {
+                        Verdict::Block {
+                            rule: RuleId::ShadowMock,
+                            evidence: format!(
+                                "Shadow mock targeting modified in-repo production symbol: '{}'",
+                                mock.target
+                            ),
+                        }
+                    } else {
+                        Verdict::Review {
+                            finding_id: id.clone(),
+                            evidence: format!(
+                                "Mock targeting internal collaborator: '{}'. Reviewer waiver required.",
+                                mock.target
+                            ),
+                        }
+                    };
+
                     findings.push(Finding {
                         id,
                         rule_id: RuleId::ShadowMock,
-                        verdict: Verdict::Block {
-                            rule: RuleId::ShadowMock,
-                            evidence: format!(
-                                "Shadow mock targeting in-repo production symbol: '{}'",
-                                mock.target
-                            ),
-                        },
+                        verdict,
                         file_path: pair.head_test.id.file_path.clone(),
                         line_number: Some(mock.line),
                         test_name: Some(test_name.clone()),
@@ -343,16 +398,33 @@ fn evaluate_shadow_mocks(diff: &SemanticDiff, policy: &Policy, findings: &mut Ve
 
             if !allowed && check_mock_target(&mock.target) {
                 let id = Finding::compute_id(RuleId::ShadowMock, "harness_mock", &mock.target);
+                let target_clean = mock.target.to_lowercase();
+                let is_direct_diff_target = in_repo_symbols.iter().any(|sym| {
+                    target_clean.contains(sym.as_str()) || sym.contains(target_clean.as_str())
+                });
+
+                let verdict = if is_direct_diff_target || policy.strict_mode {
+                    Verdict::Block {
+                        rule: RuleId::ShadowMock,
+                        evidence: format!(
+                            "Top-level harness mock targeting modified in-repo code: '{}'",
+                            mock.target
+                        ),
+                    }
+                } else {
+                    Verdict::Review {
+                        finding_id: id.clone(),
+                        evidence: format!(
+                            "Top-level harness mock targeting in-repo internal module: '{}'",
+                            mock.target
+                        ),
+                    }
+                };
+
                 findings.push(Finding {
                     id,
                     rule_id: RuleId::ShadowMock,
-                    verdict: Verdict::Block {
-                        rule: RuleId::ShadowMock,
-                        evidence: format!(
-                            "Top-level harness mock targeting in-repo code: '{}'",
-                            mock.target
-                        ),
-                    },
+                    verdict,
                     file_path: "test_harness".to_string(),
                     line_number: Some(mock.line),
                     test_name: None,
@@ -639,7 +711,7 @@ def test_tax():
     }
 
     #[test]
-    fn test_skip_marker_blocks() {
+    fn test_skip_marker_blocks_when_production_code_touched() {
         let base_test = r#"
 def test_tax():
     assert calculate_tax(100) == 10
@@ -649,7 +721,46 @@ def test_tax():
 def test_tax():
     assert calculate_tax(100) == 10
 "#;
+        let base_src = r#"
+def calculate_tax(amount):
+    return amount * 0.10
+"#;
+        let head_src = r#"
+def calculate_tax(amount):
+    return amount * 0.15
+"#;
 
+        let mut base_files = HashMap::new();
+        base_files.insert("tests/test_tax.py".to_string(), base_test.to_string());
+        base_files.insert("app/tax.py".to_string(), base_src.to_string());
+
+        let mut head_files = HashMap::new();
+        head_files.insert("tests/test_tax.py".to_string(), head_test.to_string());
+        head_files.insert("app/tax.py".to_string(), head_src.to_string());
+
+        let diff = SemanticDiff::build(&base_files, &head_files).unwrap();
+        let policy = Policy::default();
+        let waivers = HashSet::new();
+
+        let findings = evaluate_rules(&diff, &policy, &waivers);
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].rule_id, RuleId::AssertionLock);
+        assert!(matches!(findings[0].verdict, Verdict::Block { .. }));
+    }
+
+    #[test]
+    fn test_skip_marker_demotes_to_review_for_flakiness_quarantine() {
+        let base_test = r#"
+def test_tax():
+    assert calculate_tax(100) == 10
+"#;
+        let head_test = r#"
+@pytest.mark.skip(reason="quarantining flaky test")
+def test_tax():
+    assert calculate_tax(100) == 10
+"#;
+
+        // No production files modified in this PR
         let mut base_files = HashMap::new();
         base_files.insert("tests/test_tax.py".to_string(), base_test.to_string());
 
@@ -663,7 +774,7 @@ def test_tax():
         let findings = evaluate_rules(&diff, &policy, &waivers);
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].rule_id, RuleId::AssertionLock);
-        matches!(findings[0].verdict, Verdict::Block { .. });
+        assert!(matches!(findings[0].verdict, Verdict::Review { .. }));
     }
 
     #[test]

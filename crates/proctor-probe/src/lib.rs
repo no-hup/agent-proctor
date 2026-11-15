@@ -4,7 +4,7 @@ pub mod mutant;
 pub mod runner;
 pub mod sandbox;
 
-pub use mutant::{apply_mutant_with_sentinel, generate_mutants, Mutant};
+pub use mutant::{apply_mutant_with_sentinel, generate_mutants, generate_targeted_mutants, Mutant};
 pub use runner::{execute_probe_run, ProbeOutcome};
 pub use sandbox::WorktreeGuard;
 
@@ -12,6 +12,7 @@ use anyhow::Result;
 use proctor_core::{Finding, RuleId, Verdict};
 use proctor_diff::SemanticDiff;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::path::Path;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -88,7 +89,24 @@ pub fn run_probe(
             Err(_) => continue,
         };
 
-        let mutants = generate_mutants(src_path, &original_content, max_mutants_per_file);
+        // Compute modified lines in this production source file between base and head
+        let mut modified_lines = HashSet::new();
+        if let Some(base_content) = diff.raw_base_files.get(src_path) {
+            let base_set: HashSet<&str> = base_content.lines().collect();
+            for (idx, line) in original_content.lines().enumerate() {
+                if !base_set.contains(line) {
+                    modified_lines.insert(idx + 1);
+                }
+            }
+        }
+
+        let target_set = if modified_lines.is_empty() {
+            None
+        } else {
+            Some(&modified_lines)
+        };
+
+        let mutants = generate_targeted_mutants(src_path, &original_content, target_set, max_mutants_per_file);
 
         for mutant in mutants {
             // Apply mutant with sentinel hook

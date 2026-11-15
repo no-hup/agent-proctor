@@ -86,6 +86,14 @@ enum Commands {
         #[arg(long)]
         sarif: Option<PathBuf>,
     },
+    /// Audit historical commits or pull requests to measure false positive rate and integrity findings
+    Audit {
+        #[arg(short, long, default_value_t = 20)]
+        limit: usize,
+
+        #[arg(short, long, value_enum, default_value_t = OutputFormat::Pretty)]
+        format: OutputFormat,
+    },
     /// Print version and supported language parsers
     Version,
 }
@@ -123,6 +131,7 @@ fn main() -> Result<()> {
             format,
             sarif,
         }) => run_probe_cmd(&base, &head, max_mutants, format, sarif),
+        Some(Commands::Audit { limit, format }) => run_audit(limit, format),
         None => run_scan(
             &cli.base,
             cli.head.as_deref(),
@@ -175,8 +184,10 @@ fn run_scan(
         .map_err(|e| anyhow::anyhow!("Semantic diff failed: {}", e))?;
 
     // 3. Configure policy & waivers
-    let mut policy = Policy::default();
-    policy.strict_mode = strict;
+    let mut policy = Policy::discover();
+    if strict {
+        policy.strict_mode = true;
+    }
 
     let accepted_waivers: HashSet<String> = waiver_vec.iter().cloned().collect();
 
@@ -302,4 +313,125 @@ fn run_probe_cmd(
     } else {
         std::process::exit(0);
     }
+}
+
+fn run_audit(limit: usize, format: OutputFormat) -> Result<()> {
+    println!("proctor: Auditing last {} historical commits for test integrity & false-positive metrics...\n", limit);
+
+    let output = std::process::Command::new("git")
+        .args(["log", &format!("-n{}", limit), "--format=%H"])
+        .output()?;
+
+    if !output.status.success() {
+        eprintln!("proctor: Failed to read git history.");
+        std::process::exit(1);
+    }
+
+    let commits_str = String::from_utf8_lossy(&output.stdout);
+    let commits: Vec<&str> = commits_str
+        .lines()
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty())
+        .collect();
+
+    let policy = Policy::discover();
+    let empty_waivers = HashSet::new();
+
+    let mut total_audited = 0;
+    let mut clean_commits = 0;
+    let mut review_commits = 0;
+    let mut block_commits = 0;
+    let mut rule_counts: std::collections::HashMap<&'static str, usize> = std::collections::HashMap::new();
+
+    for commit in &commits {
+        let parent = format!("{}^", commit);
+        if let Ok(changed) = git::get_changed_files(&parent, Some(commit)) {
+            if changed.base_files.is_empty() && changed.head_files.is_empty() {
+                continue;
+            }
+            if let Ok(diff) = SemanticDiff::build(&changed.base_files, &changed.head_files) {
+                total_audited += 1;
+                let findings = evaluate_rules(&diff, &policy, &empty_waivers);
+
+                let has_block = findings
+                    .iter()
+                    .any(|f| matches!(f.verdict, Verdict::Block { .. }));
+                let has_review = findings
+                    .iter()
+                    .any(|f| matches!(f.verdict, Verdict::Review { .. }));
+
+                for f in &findings {
+                    *rule_counts.entry(f.rule_id.code()).or_insert(0) += 1;
+                }
+
+                if has_block {
+                    block_commits += 1;
+                } else if has_review {
+                    review_commits += 1;
+                } else {
+                    clean_commits += 1;
+                }
+            }
+        }
+    }
+
+    match format {
+        OutputFormat::Pretty => {
+            println!("{}", "─".repeat(60));
+            println!("📊 proctor audit: Historical Repository Integrity Scan");
+            println!("  Commits Audited : {}", total_audited);
+            let pass_pct = if total_audited > 0 {
+                (clean_commits as f64 / total_audited as f64) * 100.0
+            } else {
+                0.0
+            };
+            let review_pct = if total_audited > 0 {
+                (review_commits as f64 / total_audited as f64) * 100.0
+            } else {
+                0.0
+            };
+            let block_pct = if total_audited > 0 {
+                (block_commits as f64 / total_audited as f64) * 100.0
+            } else {
+                0.0
+            };
+            println!("  Clean (PASS)    : {} ({:.1}%)", clean_commits, pass_pct);
+            println!("  Spec Revisions  : {} ({:.1}%) [REVIEW]", review_commits, review_pct);
+            println!("  Violations      : {} ({:.1}%) [BLOCK]", block_commits, block_pct);
+            println!("{}", "─".repeat(60));
+
+            if !rule_counts.is_empty() {
+                println!("\n  Findings Breakdown by Rule:");
+                for (rule, count) in &rule_counts {
+                    println!("    {:<12} : {}", rule, count);
+                }
+            }
+            println!(
+                "\n  Estimated Historical False-Positive Rate: {:.2}%\n",
+                block_pct
+            );
+        }
+        OutputFormat::Json => {
+            let res = serde_json::json!({
+                "commits_audited": total_audited,
+                "clean_pass": clean_commits,
+                "review_required": review_commits,
+                "blocked": block_commits,
+                "rule_breakdown": rule_counts,
+                "false_positive_estimate_pct": if total_audited > 0 { (block_commits as f64 / total_audited as f64) * 100.0 } else { 0.0 },
+            });
+            println!("{}", serde_json::to_string_pretty(&res)?);
+        }
+        OutputFormat::Sarif => {
+            let res = serde_json::json!({
+                "commits_audited": total_audited,
+                "clean_pass": clean_commits,
+                "review_required": review_commits,
+                "blocked": block_commits,
+            });
+            println!("{}", serde_json::to_string_pretty(&res)?);
+        }
+    }
+
+    Ok(())
 }

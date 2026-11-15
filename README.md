@@ -7,6 +7,8 @@
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
 [![crates.io](https://img.shields.io/crates/v/agent-proctor.svg)](https://crates.io/crates/agent-proctor)
 
+> **Supported Languages (v0.1):** Python (`pytest`, `unittest`) and JavaScript/TypeScript (`Jest`, `Vitest`). Go, Java, and Rust parser support are on the active roadmap.
+
 ---
 
 ## The Problem: Specification Gaming in Coding Agents
@@ -85,8 +87,43 @@ npx agent-proctor scan
 # Static AST scan (<200ms)
 proctor scan --base origin/main
 
+# Audit last 50 merged commits to measure historical false-positive rate
+proctor audit --limit 50
+
 # Dynamic ephemeral mutation probe with sentinel tracking
 proctor probe --base origin/main --head HEAD
+```
+
+---
+
+## Configuration (`proctor.toml`)
+
+Customize allowed internal collaborator mocks and ignore rules in your repository root:
+
+```toml
+# proctor.toml
+
+# Allowed mock prefixes for legitimate internal collaborators
+allow_mocks = [
+  "app.clients.*",
+  "app.services.mailer",
+  "tests.fixtures.*"
+]
+
+# Paths ignored during integrity scanning
+ignored_paths = [
+  "vendor/**",
+  "node_modules/**"
+]
+
+# Guard against CI workflow sabotage (.github/workflows/*)
+enforce_ci_tampering = true
+
+# Demote test skip/xfail to REVIEW when underlying production code is untouched (flakiness quarantine)
+skip_demote_to_review = true
+
+# In strict mode, REVIEW findings also exit with code 2 (BLOCK)
+strict_mode = false
 ```
 
 ---
@@ -164,7 +201,7 @@ fi
 
 ---
 
-## Cryptographic Human Waivers
+## GitHub-Attested Human Waivers
 
 In-diff comments (`# proctor: allow`) can be forged by autonomous agents. `agent-proctor` validates waivers strictly through **authenticated GitHub PR review comments**:
 
@@ -175,8 +212,10 @@ proctor: accept 7a9f2b1c4e8d
 A waiver is valid in CI **if and only if**:
 1. The comment user is **not** the PR author or any committer on `HEAD`.
 2. The user is **not a bot**.
-3. The user has **write permissions** on the repository.
-4. The comment is newer than the last commit touching that file.
+3. The user has **OWNER, MEMBER, or COLLABORATOR permissions** on the repository.
+4. The 12-character Blake3 finding fingerprint matches the AST delta exactly.
+
+When running in GitHub Actions, `agent-proctor` automatically renders a live findings table and waiver instructions directly to `$GITHUB_STEP_SUMMARY`, ensuring developers and reviewers have zero-friction copy-paste waiver commands even on fork PRs.
 
 ---
 

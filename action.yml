@@ -28,7 +28,7 @@ inputs:
     required: false
     default: 'proctor-results.sarif'
   github-token:
-    description: 'GitHub token for cryptographic waiver validation'
+    description: 'GitHub token for reviewer waiver verification'
     required: false
     default: ${{ github.token }}
 
@@ -45,7 +45,7 @@ runs:
           git fetch --depth=1 origin "${{ inputs.head-ref }}" || true
         fi
 
-    - name: Cryptographically verify reviewer waivers
+    - name: Verify GitHub-attested reviewer waivers
       id: waivers
       shell: bash
       env:

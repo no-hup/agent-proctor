@@ -154,31 +154,69 @@ impl Finding {
     }
 }
 
-/// Repository configuration policy, loaded from upstream protected base branch.
+/// Repository configuration policy, loaded from upstream protected base branch or proctor.toml.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Policy {
-    #[serde(default)]
+    #[serde(default = "default_allow_mocks")]
     pub allow_mocks: Vec<String>,
-    #[serde(default)]
+    #[serde(default = "default_ignored_paths")]
     pub ignored_paths: Vec<String>,
     #[serde(default = "default_true")]
     pub enforce_ci_tampering: bool,
     #[serde(default)]
     pub strict_mode: bool,
+    #[serde(default = "default_true")]
+    pub skip_demote_to_review: bool,
 }
 
 fn default_true() -> bool {
     true
 }
 
+fn default_allow_mocks() -> Vec<String> {
+    vec!["app.clients.*".to_string(), "tests.fixtures.*".to_string()]
+}
+
+fn default_ignored_paths() -> Vec<String> {
+    vec!["vendor/**".to_string(), "node_modules/**".to_string()]
+}
+
 impl Default for Policy {
     fn default() -> Self {
         Self {
-            allow_mocks: vec!["app.clients.*".to_string(), "tests.fixtures.*".to_string()],
-            ignored_paths: vec!["vendor/**".to_string(), "node_modules/**".to_string()],
+            allow_mocks: default_allow_mocks(),
+            ignored_paths: default_ignored_paths(),
             enforce_ci_tampering: true,
             strict_mode: false,
+            skip_demote_to_review: true,
         }
+    }
+}
+
+impl Policy {
+    /// Parse policy from TOML string.
+    pub fn from_toml(s: &str) -> Result<Self, toml::de::Error> {
+        toml::from_str(s)
+    }
+
+    /// Load policy from a TOML file path.
+    pub fn from_file<P: AsRef<std::path::Path>>(path: P) -> anyhow::Result<Self> {
+        let content = std::fs::read_to_string(path)?;
+        let policy: Policy = toml::from_str(&content)?;
+        Ok(policy)
+    }
+
+    /// Automatically discover proctor.toml or .proctor.toml in current directory or repo root.
+    pub fn discover() -> Self {
+        for candidate in &["proctor.toml", ".proctor.toml"] {
+            let path = std::path::Path::new(candidate);
+            if path.exists() {
+                if let Ok(policy) = Self::from_file(path) {
+                    return policy;
+                }
+            }
+        }
+        Self::default()
     }
 }
 
@@ -213,5 +251,19 @@ mod tests {
         let id2 = Finding::compute_id(RuleId::AssertionLock, "test_tax", "assert total == 120");
         assert_eq!(id1, id2);
         assert_eq!(id1.len(), 12);
+    }
+
+    #[test]
+    fn test_policy_from_toml() {
+        let toml_str = r#"
+allow_mocks = ["app.services.*", "infra.*"]
+ignored_paths = ["dist/**"]
+strict_mode = true
+"#;
+        let policy = Policy::from_toml(toml_str).unwrap();
+        assert_eq!(policy.allow_mocks.len(), 2);
+        assert!(policy.strict_mode);
+        assert!(policy.enforce_ci_tampering); // default true
+        assert!(policy.skip_demote_to_review); // default true
     }
 }

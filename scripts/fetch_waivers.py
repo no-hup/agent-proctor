@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Fetches and cryptographically verifies PR review waivers from GitHub REST API.
+Fetches and verifies GitHub-attested PR review waivers from the GitHub REST API.
 
 Enforces:
 1. Reviewer must have OWNER, MEMBER, or COLLABORATOR permission.

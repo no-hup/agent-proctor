@@ -1,0 +1,23 @@
+# agent-proctor Configuration Policy (proctor.toml)
+
+# Allowed mock prefixes for legitimate internal collaborators
+# Wildcard matching (e.g. "app.clients.*", "infra.*")
+allow_mocks = [
+    "app.clients.*",
+    "tests.fixtures.*"
+]
+
+# Paths ignored during integrity scanning
+ignored_paths = [
+    "vendor/**",
+    "node_modules/**"
+]
+
+# Guard against CI workflow sabotage (.github/workflows/*)
+enforce_ci_tampering = true
+
+# Demote test skip/xfail to REVIEW when underlying production code is untouched (flakiness quarantine)
+skip_demote_to_review = true
+
+# In strict mode, REVIEW findings also exit with code 2 (BLOCK)
+strict_mode = false
