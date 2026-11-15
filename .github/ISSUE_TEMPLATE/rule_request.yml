@@ -1,0 +1,37 @@
+name: Anticheat Rule Proposal
+description: Propose a new specification gaming pattern or anticheat invariant
+title: "[Rule Request]: <Brief description of cheating pattern>"
+labels: ["enhancement", "rule-proposal"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Have you observed an AI coding agent circumventing test harnesses or specification bounds in a new way?
+        Describe the pattern below.
+
+  - type: textarea
+    id: pattern
+    attributes:
+      label: Cheating Pattern Description
+      description: How does the agent game the test or verification loop?
+    validations:
+      required: true
+
+  - type: textarea
+    id: example_diff
+    attributes:
+      label: Example Diff / Attack Vector
+      description: Show an example patch demonstrating the cheat.
+      render: diff
+    validations:
+      required: true
+
+  - type: dropdown
+    id: target_tier
+    attributes:
+      label: Recommended Severity Tier
+      options:
+        - Guard (Hard BLOCK / Exit Code 2)
+        - Report (Advisory / Exit Code 0 or Exit Code 1 under --strict)
+    validations:
+      required: true

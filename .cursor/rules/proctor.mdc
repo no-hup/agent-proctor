@@ -1,0 +1,23 @@
+---
+description: Test integrity and anticheat rules for autonomous coding agents
+globs: tests/**/*, **/*test*, **/*spec*, conftest.py, pytest.ini
+---
+
+# Proctor Test Integrity Invariants
+
+When working on code fixes or modifying tests:
+
+1. **Never Weaken Assertions to Pass Tests:**
+   - Do NOT replace exact assertions (`assert x == 5`) with truthy checks (`assert x is not None`), range checks (`assert x >= 0`), or vacuous logic (`assert True`).
+   - If a test fails, you MUST fix the implementation bug in the production code.
+
+2. **Never Inject Shadow Mocks for Systems Under Test (SUT):**
+   - Do NOT mock the function or class you are tasked with fixing. Mocks are only permitted for external boundary dependencies (network, databases, third-party APIs).
+
+3. **Never Sabotage CI or Test Runners:**
+   - Do NOT append `|| true`, `; exit 0`, or ignore flags to test runner steps.
+   - Do NOT alter `pytest.ini`, `setup.cfg`, or `jest.config` to lower coverage thresholds or ignore failures.
+
+4. **Verify Integrity Before Declaring Done:**
+   - Always run `proctor scan` before completing your turn or opening a pull request.
+   - Any `Guard` findings must be addressed immediately by reverting the test tampering and fixing the actual bug.

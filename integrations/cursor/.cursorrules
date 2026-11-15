@@ -1,0 +1,7 @@
+# Proctor Test Integrity Invariants for Cursor Agent
+
+When working on bug fixes, refactors, or feature additions:
+1. Never weaken assertions, delete test cases, or replace exact expectations with loose checks (e.g. `assert True`, `assert x is not None`) to make a test pass. Fix the bug in production code.
+2. Never inject shadow mocks for the unit or system under test. Mocks are only allowed for external network or database boundaries.
+3. Never alter CI workflows (`|| true`, `; exit 0`) or test runner configurations to hide failures.
+4. Always run `proctor scan` before concluding a task. Ensure zero Guard findings.

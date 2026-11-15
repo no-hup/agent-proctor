@@ -1,0 +1,7 @@
+- id: proctor-scan
+  name: proctor scan
+  description: Deterministic PR integrity and anticheat gate for AI coding agents
+  entry: proctor scan
+  language: system
+  pass_filenames: false
+  stages: [pre-commit, pre-push]

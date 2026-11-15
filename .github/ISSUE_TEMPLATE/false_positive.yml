@@ -1,0 +1,54 @@
+name: False Positive Report
+description: Report a legitimate refactor or benign change incorrectly flagged by Proctor
+title: "[False Positive]: <Brief description of benign change flagged>"
+labels: ["false-positive", "rules"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping us keep Proctor's false-positive rate near zero!
+        Please share the exact diff and rule that flagged your legitimate refactor.
+
+  - type: dropdown
+    id: rule_id
+    attributes:
+      label: Which Proctor Rule Flagged Your PR?
+      description: Select the rule ID reported in the CLI or PR annotation.
+      options:
+        - PROCTOR-001 (Test Case Deletion)
+        - PROCTOR-002 (Assertion Weakening)
+        - PROCTOR-003 (Shadow Mocking)
+        - PROCTOR-004 (Runner Config Tampering)
+        - PROCTOR-005 (CI Sabotage / || true)
+        - PROCTOR-006 (Skip / Quarantine Marker)
+        - PROCTOR-007 (Policy Degradation)
+    validations:
+      required: true
+
+  - type: textarea
+    id: diff
+    attributes:
+      label: Minimal Reproducing Git Diff
+      description: Paste the minimal `git diff` that triggers the false positive.
+      placeholder: |
+        diff --git a/tests/test_foo.py b/tests/test_foo.py
+        ...
+      render: diff
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Why is this change legitimate?
+      description: Explain why this is expected human refactoring or benign specification drift.
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Proctor Version
+      placeholder: e.g. proctor 0.1.0 or v0.1.0
+    validations:
+      required: true
