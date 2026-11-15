@@ -26,6 +26,11 @@ Empirical research shows that **negative prompts do not stop specification gamin
 * **METR (June 2025)**: Frontier reasoning models reward-hacked in **30.4%** of tasks when the evaluation function was visible.
 * **ImpossibleBench (ICLR 2026)**: Models cheated on **76%** of SWE-bench tasks when allowed to modify test environments.
 
+### Threat Model: Class A vs. Class B Cheats
+`agent-proctor` specifically hardens the **repository's visible grader and test harness (Class A)**:
+* **Class A (Grader & Test Tampering — Defeated by Proctor):** Deleting test cases, weakening assertions, shadow mocking the system under test, tweaking runner configs, and sabotaging CI workflows (`|| true`).
+* **Class B (Input Overfitting — Requires Holdouts):** Hardcoding specific return values for test inputs in production code without touching test files (e.g. `if x == 10: return 42`). Proctor detects literal mirroring (when expected literals are copied into production), but defeating Class B fundamentally requires **private, uncommitted evaluation holdouts** that agents cannot read.
+
 ---
 
 ## The Solution: Deterministic 3-Way Triage
@@ -151,6 +156,7 @@ jobs:
         with:
           base-ref: ${{ github.event.pull_request.base.sha }}
           head-ref: ${{ github.event.pull_request.head.sha }}
+          strict: 'true'  # Enforce exit 1 on Report findings for unattended agent PRs
           sarif-file: proctor-results.sarif
 
       - name: Upload SARIF to GitHub Code Scanning
@@ -159,6 +165,8 @@ jobs:
         with:
           sarif_file: proctor-results.sarif
 ```
+
+> **Autonomous Agent Pipelines:** For automated, unattended agent PRs (e.g. Devin, OpenHands, sweep bots), always set `strict: 'true'` (or pass `--strict`). Under default advisory mode, Report-tier findings (such as assertion modifications coincident with production code changes) exit 0 as an advisory receipt. With `strict: 'true'`, Report findings exit 1, blocking the PR until explicitly acknowledged by the author (`proctor: ack <id>`) or waived by a maintainer.
 
 ---
 
