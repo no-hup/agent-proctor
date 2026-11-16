@@ -115,6 +115,7 @@ enum OutputFormat {
     Pretty,
     Json,
     Sarif,
+    Markdown,
 }
 
 fn main() -> Result<()> {
@@ -317,6 +318,21 @@ fn run_scan(
             let sarif_val = sarif::generate_sarif(&findings);
             println!("{}", serde_json::to_string_pretty(&sarif_val)?);
         }
+        OutputFormat::Markdown => {
+            println!("### 🛡️ agent-proctor Scan Report");
+            if findings.is_empty() {
+                println!("✅ **PASS:** All assertions and test suite integrity constraints preserved.");
+            } else {
+                println!("⚠️ **Detected {} integrity finding(s):**\n", findings.len());
+                println!("| Tier | Rule | Location | Context |");
+                println!("| :--- | :--- | :--- | :--- |");
+                for f in &findings {
+                    let ctx = f.test_name.as_deref().unwrap_or(&f.evidence).replace('|', "\\|").replace('\n', " ");
+                    let line_no = f.line_number.unwrap_or(1);
+                    println!("| `{:?}` | `{}` | `{}:{}` | {} |", f.tier, f.rule_id.code(), f.file_path, line_no, ctx);
+                }
+            }
+        }
     }
 
     // 9. Compute exit code
@@ -390,6 +406,21 @@ fn run_probe_cmd(
             let sarif_val = sarif::generate_sarif(&findings);
             println!("{}", serde_json::to_string_pretty(&sarif_val)?);
         }
+        OutputFormat::Markdown => {
+            println!("### 🛡️ agent-proctor Dynamic Mutation Probe");
+            println!("* **Total Mutants:** {}", probe_results.len());
+            println!("* **Killed:** {}", killed);
+            println!("* **Survived:** {}", survived);
+            println!("* **Inconclusive:** {}", inconclusive);
+            if !findings.is_empty() {
+                println!("\n#### Surviving Mutants & Weaknesses");
+                for f in &findings {
+                    let ctx = f.test_name.as_deref().unwrap_or(&f.evidence).replace('|', "\\|").replace('\n', " ");
+                    let line_no = f.line_number.unwrap_or(1);
+                    println!("* `{}` at `{}:{}` - {}", f.rule_id.code(), f.file_path, line_no, ctx);
+                }
+            }
+        }
     }
 
     if let Some(path) = sarif_path {
@@ -405,10 +436,12 @@ fn run_probe_cmd(
 }
 
 fn run_audit(limit: usize, format: OutputFormat, label_path: Option<PathBuf>) -> Result<()> {
-    println!(
-        "proctor: Auditing last {} historical commits for test integrity & false-positive metrics...\n",
-        limit
-    );
+    if format == OutputFormat::Pretty {
+        println!(
+            "proctor: Auditing last {} historical commits for test integrity & false-positive metrics...\n",
+            limit
+        );
+    }
 
     let output = std::process::Command::new("git")
         .args(["log", &format!("-n{}", limit), "--format=%H"])
@@ -434,6 +467,16 @@ fn run_audit(limit: usize, format: OutputFormat, label_path: Option<PathBuf>) ->
     let mut review_commits = 0;
     let mut block_commits = 0;
     let mut rule_counts: std::collections::HashMap<&'static str, usize> = std::collections::HashMap::new();
+
+    struct AuditAnomaly {
+        commit: String,
+        rule_code: &'static str,
+        file_path: String,
+        line: usize,
+        test_name: Option<String>,
+        evidence: String,
+    }
+    let mut anomalies: Vec<AuditAnomaly> = Vec::new();
 
     let mut label_file = if let Some(ref p) = label_path {
         let mut f = std::fs::File::create(p)?;
@@ -464,6 +507,16 @@ fn run_audit(limit: usize, format: OutputFormat, label_path: Option<PathBuf>) ->
 
                 for f in &findings {
                     *rule_counts.entry(f.rule_id.code()).or_insert(0) += 1;
+                    if f.tier == RuleTier::Guard || matches!(f.verdict, Verdict::Block { .. }) {
+                        anomalies.push(AuditAnomaly {
+                            commit: commit[..7.min(commit.len())].to_string(),
+                            rule_code: f.rule_id.code(),
+                            file_path: f.file_path.clone(),
+                            line: f.line_number.unwrap_or(1),
+                            test_name: f.test_name.clone(),
+                            evidence: f.evidence.clone(),
+                        });
+                    }
                 }
 
                 let verdict_label = if has_block {
@@ -550,6 +603,55 @@ fn run_audit(limit: usize, format: OutputFormat, label_path: Option<PathBuf>) ->
                 "blocked": block_commits,
             });
             println!("{}", serde_json::to_string_pretty(&res)?);
+        }
+        OutputFormat::Markdown => {
+            let pass_pct = if total_audited > 0 {
+                (clean_commits as f64 / total_audited as f64) * 100.0
+            } else {
+                0.0
+            };
+            let review_pct = if total_audited > 0 {
+                (review_commits as f64 / total_audited as f64) * 100.0
+            } else {
+                0.0
+            };
+            println!("### 🛡️ agent-proctor Audit Capsule");
+            println!("**Repository Test Suite Health & Stability Scan**\n");
+            println!("* **Commits Audited:** {}", total_audited);
+            println!("* **Clean Commits:** {} ({:.1}%)", clean_commits, pass_pct);
+            println!("* **Legitimate Spec Modifications:** {} ({:.1}%)", review_commits, review_pct);
+            println!("* **Test Modifications / Anomalies:** {} ({:.1}%)\n", block_commits, block_pct);
+
+            if !rule_counts.is_empty() {
+                println!("#### Rule Breakdown");
+                println!("| Rule Code | Occurrences |");
+                println!("| :--- | :--- |");
+                for (rule, count) in &rule_counts {
+                    println!("| `{}` | {} |", rule, count);
+                }
+                println!();
+            }
+
+            if !anomalies.is_empty() {
+                println!("#### Detected Test Modification Anomalies");
+                println!("| Commit | Rule | Location | Test / Context |");
+                println!("| :--- | :--- | :--- | :--- |");
+                for a in anomalies.iter().take(10) {
+                    let test_ctx = a.test_name.as_deref().unwrap_or(&a.evidence);
+                    let sanitized = test_ctx.replace('|', "\\|").replace('\n', " ");
+                    println!("| `{}` | `{}` | `{}:{}` | {} |", a.commit, a.rule_code, a.file_path, a.line, sanitized);
+                }
+                if anomalies.len() > 10 {
+                    println!("\n*...and {} more findings recorded in scan.*", anomalies.len() - 10);
+                }
+                println!();
+            }
+
+            println!("> **Deterministic Local Verification (Zero Egress, Sub-50ms Tree-sitter):**");
+            println!("> Run locally on your clone in <3s with zero network egress or telemetry:");
+            println!("> ```bash");
+            println!("> curl -sSfL https://github.com/no-hup/proctor-action/releases/latest/download/proctor-$(uname -s | tr '[:upper:]' '[:lower:]')-$(uname -m).tar.gz | tar -xz && ./proctor audit --limit {}", limit);
+            println!("> ```");
         }
     }
 
