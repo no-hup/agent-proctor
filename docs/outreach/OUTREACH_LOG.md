@@ -8,6 +8,8 @@ Tracks high-converting, reproducible-proof outreach to open-source maintainers.
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 | 2026-11-17 | Paul Gauthier | `aider-AI/aider` | `paul@aider.chat` | `1a1e63701b76da5a` | 100 commits (94% clean, 6% spec mod) | SENT |
 | 2026-11-17 | Kilian Lieret | `princeton-nlp/SWE-agent` | `kilian.lieret@posteo.de` | `1a1e6371d1f41a52` | 100 commits (98% clean, 0% un-orphaned) | SENT |
+| 2026-11-17 | Graham Neubig | `OpenHands/OpenHands` | `neubig@gmail.com` | `1a1e66db099b4a69` | 99 commits (65% clean, 11% test mod) | SENT |
+| 2026-11-17 | Krrish Dholakia | `BerriAI/litellm` | `krrish@berri.ai` | `1a1e66dc6434541e` | 99 commits (56% clean, 21% test mod) | SENT |
 
 ## Outreach Guidelines & Invariants
 1. **Never accuse maintainers of bad tests**: Always lead with their clean baseline (e.g. "94% clean", "98% clean").
