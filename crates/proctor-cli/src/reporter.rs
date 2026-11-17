@@ -199,33 +199,52 @@ pub fn write_github_step_summary(path: &str, findings: &[Finding], base_ref: &st
     Ok(())
 }
 
+/// Test files in languages the engine does not parse (reported, never silently counted as clean).
+fn is_unanalyzed_test(path: &str) -> bool {
+    let p = std::path::Path::new(path);
+    let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
+    const UNSUPPORTED: [&str; 12] = ["go", "rs", "rb", "java", "kt", "php", "cs", "swift", "scala", "ex", "exs", "cpp"];
+    if !UNSUPPORTED.contains(&ext) {
+        return false;
+    }
+    let name = p.file_name().and_then(|f| f.to_str()).unwrap_or("").to_lowercase();
+    let in_test_dir = p.components().any(|c| matches!(c.as_os_str().to_str(), Some("tests" | "test" | "spec" | "__tests__")));
+    in_test_dir || name.contains("_test.") || name.contains("_spec.") || name.starts_with("test_") || name.contains("test.")
+}
+
 /// Renders the PR Test-Change Receipt: what happened to tests, gates, and suppressions in this diff.
 pub fn render_receipt(diff: &proctor_diff::SemanticDiff, findings: &[Finding]) -> String {
     use proctor_core::{AssertionStrength, RuleId, RuleTier};
+    use std::collections::BTreeSet;
     use std::collections::HashSet;
 
     let flagged_tests: HashSet<&str> = findings.iter().filter_map(|f| f.test_name.as_deref()).collect();
     let exact = |t: &proctor_parse::ParsedTest| t.assertions.iter().filter(|a| a.strength == AssertionStrength::Exact).count();
     let count_rule = |rules: &[RuleId]| findings.iter().filter(|f| rules.contains(&f.rule_id)).count();
 
-    // Added
+    let unanalyzed: BTreeSet<&str> = diff
+        .raw_base_files
+        .keys()
+        .chain(diff.raw_head_files.keys())
+        .map(String::as_str)
+        .filter(|p| is_unanalyzed_test(p))
+        .collect();
+
     let added = diff.new_tests.len();
     let added_no_exact = diff.new_tests.iter().filter(|t| exact(t) == 0).count();
 
-    // Modified
-    let (mut strengthened, mut flagged_mod, mut neutral) = (0, 0, 0);
+    let (mut strengthened, mut flagged_mod, mut unflagged) = (0, 0, 0);
     for p in diff.paired_tests.iter().filter(|p| p.base_test.id.body_content_hash != p.head_test.id.body_content_hash) {
         if flagged_tests.contains(p.head_test.id.canonical_name().as_str()) {
             flagged_mod += 1;
         } else if exact(&p.head_test) > exact(&p.base_test) {
             strengthened += 1;
         } else {
-            neutral += 1;
+            unflagged += 1;
         }
     }
-    let modified = strengthened + flagged_mod + neutral;
+    let modified = strengthened + flagged_mod + unflagged;
 
-    // Deleted
     let deleted = diff.deleted_tests.len();
     let deleted_flagged = diff.deleted_tests.iter().filter(|t| flagged_tests.contains(t.id.canonical_name().as_str())).count();
 
@@ -233,30 +252,39 @@ pub fn render_receipt(diff: &proctor_diff::SemanticDiff, findings: &[Finding]) -
     let suppressions = count_rule(&[RuleId::BlanketSuppression]);
     let mocks = count_rule(&[RuleId::ShadowMock]);
 
+    if added + modified + deleted + unanalyzed.len() == 0 && findings.is_empty() {
+        return "**agent-proctor:** no test changes and no gate loosening found in this PR.\n".to_string();
+    }
+
     let ok = |n: usize| if n == 0 { "✅" } else { "⚠️" };
     let mut out = String::from("### 📋 Test-Change Receipt (agent-proctor)\n\n");
     out += "| Category | Count | Status |\n|---|---|---|\n";
     out += &format!(
         "| **Added tests** | {} | {} |\n",
         added,
-        if added == 0 { "—".to_string() } else if added_no_exact == 0 { "✅ all have exact assertions".to_string() } else { format!("⚠️ {} without an exact assertion", added_no_exact) }
+        if added == 0 { "—".to_string() } else if added_no_exact == 0 { "all contain an exact-value assertion (not executed)".to_string() } else { format!("⚠️ {} without an exact-value assertion", added_no_exact) }
     );
     out += &format!(
-        "| **Modified tests** | {} | {} {} strengthened, {} neutral, {} flagged |\n",
-        modified, ok(flagged_mod), strengthened, neutral, flagged_mod
+        "| **Modified tests** | {} | {} {} strengthened, {} changed without findings, {} flagged |\n",
+        modified, ok(flagged_mod), strengthened, unflagged, flagged_mod
     );
     out += &format!(
-        "| **Deleted tests** | {} | {} {} obsolete (production symbols removed in this PR), {} flagged |\n",
+        "| **Deleted tests** | {} | {} {} justified (every production symbol they touch was removed), {} flagged |\n",
         deleted, ok(deleted_flagged), deleted - deleted_flagged, deleted_flagged
     );
-    out += &format!("| **Configs & CI gates** | {} | {} |\n", gates, if gates == 0 { "✅ no loosening" } else { "⚠️ loosened" });
+    out += &format!("| **Configs & CI gates** | {} | {} |\n", gates, if gates == 0 { "✅ no loosening found" } else { "⚠️ loosened" });
     out += &format!("| **Blanket suppressions** | {} | {} |\n", suppressions, if suppressions == 0 { "✅ none added" } else { "⚠️ added" });
     out += &format!("| **Internal mocks** | {} | {} |\n", mocks, if mocks == 0 { "✅ none added" } else { "⚠️ added" });
+    if !unanalyzed.is_empty() {
+        let list: Vec<String> = unanalyzed.iter().take(5).map(|p| format!("`{}`", p)).collect();
+        let more = if unanalyzed.len() > 5 { format!(" +{} more", unanalyzed.len() - 5) } else { String::new() };
+        out += &format!("| **Not analyzed (unsupported language)** | {} | ⚠️ review by hand: {}{} |\n", unanalyzed.len(), list.join(", "), more);
+    }
 
     let blocks = findings.iter().filter(|f| f.tier == RuleTier::Guard).count();
     let reviews = findings.len() - blocks;
     out += &match (blocks, reviews) {
-        (0, 0) => "\n**Verdict:** 🟢 Nothing to review in the test diff.\n".to_string(),
+        (0, 0) => "\n**Verdict:** 🟢 No findings in analyzed test files.\n".to_string(),
         (0, r) => format!("\n**Verdict:** 🟡 {} item{} worth a look.\n", r, if r == 1 { "" } else { "s" }),
         (b, _) => format!("\n**Verdict:** 🔴 {} blocking finding{}.\n", b, if b == 1 { "" } else { "s" }),
     };
@@ -273,5 +301,28 @@ pub fn render_receipt(diff: &proctor_diff::SemanticDiff, findings: &[Finding]) -
         }
         out += "\n</details>\n";
     }
+    out += "\n<sub>Static analysis of the diff only; no tests were executed. Dynamic red/green verification is opt-in.</sub>\n";
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    #[test]
+    fn receipt_flags_unanalyzed_go_tests_and_is_quiet_when_nothing_changed() {
+        let base = HashMap::from([("pkg/a_test.go".to_string(), "package pkg\n".to_string())]);
+        let head = HashMap::new();
+        let diff = proctor_diff::SemanticDiff::build(&base, &head).unwrap();
+        let r = render_receipt(&diff, &[]);
+        assert!(r.contains("Not analyzed"), "{r}");
+        assert!(r.contains("pkg/a_test.go"));
+        assert!(!r.contains("Nothing to review"));
+        assert!(r.contains("no tests were executed"));
+
+        let same = HashMap::from([("README.md".to_string(), "x".to_string())]);
+        let diff = proctor_diff::SemanticDiff::build(&same, &same).unwrap();
+        assert_eq!(render_receipt(&diff, &[]).lines().count(), 1);
+    }
 }

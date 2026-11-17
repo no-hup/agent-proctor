@@ -47,7 +47,7 @@ pub fn parse_python_source_file(file_path: &str, source: &str) -> Result<ParsedS
     let mut string_literals = Vec::new();
     let mut symbol_bodies = std::collections::HashMap::new();
 
-    extract_source_symbols(root, source, &mut defined_symbols, &mut symbol_bodies, &mut string_literals);
+    extract_source_symbols(root, source, false, &mut defined_symbols, &mut symbol_bodies, &mut string_literals);
 
     Ok(ParsedSourceFile {
         file_path: file_path.to_string(),
@@ -174,6 +174,9 @@ fn extract_python_test(
 
     let mut body_symbols = Vec::new();
     extract_identifiers_and_attrs(fn_node, source, &mut body_symbols);
+    let mut locals = std::collections::HashSet::new();
+    collect_python_locals(fn_node, source, &mut locals);
+    body_symbols.retain(|s| !locals.contains(s));
 
     ParsedTest {
         id: test_id,
@@ -380,6 +383,33 @@ fn extract_identifiers_and_attrs(node: Node, source: &str, symbols: &mut Vec<Str
     }
 }
 
+/// Names bound inside a test (`x = ...`, `for x in`, `with ... as x`): the test's own variables.
+fn collect_python_locals(node: Node, source: &str, locals: &mut std::collections::HashSet<String>) {
+    let cursor = &mut node.walk();
+    for child in node.children(cursor) {
+        let target = match child.kind() {
+            "assignment" | "augmented_assignment" => child.child_by_field_name("left"),
+            "for_statement" => child.child_by_field_name("left"),
+            "as_pattern" => child.child_by_field_name("alias"),
+            _ => None,
+        };
+        if let Some(t) = target {
+            if t.kind() == "identifier" || t.kind() == "as_pattern_target" {
+                locals.insert(t.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+            } else {
+                // tuple/list unpacking: every bare identifier on the left
+                let c = &mut t.walk();
+                for n in t.children(c) {
+                    if n.kind() == "identifier" {
+                        locals.insert(n.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                    }
+                }
+            }
+        }
+        collect_python_locals(child, source, locals);
+    }
+}
+
 fn extract_mock_call(node: Node, source: &str) -> Option<ParsedMock> {
     if node.kind() != "call" {
         return None;
@@ -454,9 +484,12 @@ fn find_list_tuples(node: Node, source: &str, hashes: &mut Vec<u64>) {
     }
 }
 
+/// Records module-level and class-member definitions only; locals inside functions are not definitions.
+/// Literals are collected everywhere (the mirror check needs them).
 fn extract_source_symbols(
     node: Node,
     source: &str,
+    in_function: bool,
     defined_symbols: &mut Vec<String>,
     symbol_bodies: &mut std::collections::HashMap<String, String>,
     string_literals: &mut Vec<String>,
@@ -464,7 +497,7 @@ fn extract_source_symbols(
     let cursor = &mut node.walk();
     for child in node.children(cursor) {
         match child.kind() {
-            "function_definition" | "class_definition" => {
+            "function_definition" | "class_definition" if !in_function => {
                 if let Some(name_node) = child.child_by_field_name("name") {
                     let name = name_node.utf8_text(source.as_bytes()).unwrap_or("");
                     if !name.is_empty() {
@@ -474,7 +507,7 @@ fn extract_source_symbols(
                     }
                 }
             }
-            "assignment" => {
+            "assignment" if !in_function => {
                 if let Some(left) = child.child_by_field_name("left") {
                     let name = left.utf8_text(source.as_bytes()).unwrap_or("");
                     if !name.is_empty() {
@@ -493,7 +526,8 @@ fn extract_source_symbols(
             }
             _ => {}
         }
-        extract_source_symbols(child, source, defined_symbols, symbol_bodies, string_literals);
+        let nested = in_function || child.kind() == "function_definition" || child.kind() == "lambda";
+        extract_source_symbols(child, source, nested, defined_symbols, symbol_bodies, string_literals);
     }
 }
 

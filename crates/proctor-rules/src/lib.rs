@@ -351,15 +351,9 @@ fn evaluate_assertion_lock(diff: &SemanticDiff, policy: &Policy, findings: &mut 
     // 1c. Whole test deletions (Guard tier: always BLOCK)
     for del_test in &diff.deleted_tests {
         let test_name = del_test.id.canonical_name();
-        // Justified only if every production-referencing assertion is orphaned.
-        // A test with no production references is never auto-justified.
-        let prod_asserts: Vec<_> = del_test
-            .assertions
-            .iter()
-            .filter(|a| a.referenced_symbols.iter().any(|s| diff.all_base_symbols.contains(s)))
-            .collect();
-        let justified = !prod_asserts.is_empty()
-            && prod_asserts.iter().all(|a| diff.is_reference_orphaned(&a.referenced_symbols));
+        // Justified only if every production symbol the test body touches (calls, mock-style
+        // checks, assertions) was deleted. A test touching no production symbol is never auto-justified.
+        let justified = diff.is_reference_orphaned(&del_test.body_symbols);
 
         if !justified {
             let id = Finding::compute_id(RuleId::AssertionLock, &test_name, "test_deleted");
@@ -810,14 +804,36 @@ fn evaluate_config_loosening(diff: &SemanticDiff, findings: &mut Vec<Finding>) {
             continue;
         }
 
-        // Coverage floor lowered (fail_under / --cov-fail-under)
+        // Coverage floor lowered or removed (fail_under)
         if is_py_config {
             let keys = ["fail_under", "fail-under"];
-            if let (Some(b), Some(h)) = (first_number_for_keys(base, &keys), first_number_for_keys(head, &keys)) {
-                if h < b {
-                    push_guard(findings, RuleId::RunnerConfigTamper, path, None, "fail_under",
-                        format!("Coverage floor lowered from {} to {} in '{}'.", b, h, path),
-                        &format!("fail_under {} -> {}", b, h));
+            match (first_number_for_keys(base, &keys), first_number_for_keys(head, &keys)) {
+                (Some(b), Some(h)) if h < b => push_guard(findings, RuleId::RunnerConfigTamper, path, None, "fail_under",
+                    format!("Coverage floor lowered from {} to {} in '{}'.", b, h, path),
+                    &format!("fail_under {} -> {}", b, h)),
+                (Some(b), None) => push_guard(findings, RuleId::RunnerConfigTamper, path, None, "fail_under_removed",
+                    format!("Coverage floor (fail_under = {}) removed from '{}'.", b, path),
+                    &format!("fail_under {} removed", b)),
+                _ => {}
+            }
+        }
+
+        // Strictness switched on in base but the line is gone in head (defaults are lax).
+        let head_lines: HashSet<&str> = head.lines().map(str::trim).collect();
+        for (idx, raw) in base.lines().enumerate() {
+            let line = raw.trim();
+            if head_lines.contains(line) {
+                continue;
+            }
+            if let Some((key, value)) = config_key_value(line) {
+                let value = value.trim_matches(|c| c == '"' || c == '\'').to_lowercase();
+                let is_strict_key = key == "strict" || key.starts_with("strictnull") || key.starts_with("noimplicit");
+                if is_strict_key && value == "true" {
+                    let still_set = head.lines().filter_map(|l| config_key_value(l.trim())).any(|(k, _)| k == key);
+                    if !still_set {
+                        push_guard(findings, RuleId::RunnerConfigTamper, path, Some(idx + 1), &format!("removed:{}", line),
+                            format!("Strictness setting removed from '{}': '{}' (base line {}).", path, line, idx + 1), line);
+                    }
                 }
             }
         }
@@ -826,10 +842,14 @@ fn evaluate_config_loosening(diff: &SemanticDiff, findings: &mut Vec<Finding>) {
         let added: HashSet<usize> = added_lines(base, head).into_iter().map(|(n, _)| n).collect();
         let mut current_key = String::new();
         let mut section_key = String::new();
+        // `[[tool.mypy.overrides]]` / `[mypy-pkg.*]`: per-module escape hatches, a normal migration tool.
+        let mut scoped_section = false;
+        let new_file = base.is_empty();
         for (idx, raw) in head.lines().enumerate() {
             let line = raw.trim();
             if line.starts_with('[') && line.ends_with(']') {
                 current_key.clear();
+                scoped_section = line.contains("overrides") || line.starts_with("[mypy-");
                 section_key = line.trim_matches(['[', ']']).rsplit('.').next().unwrap_or("").to_lowercase();
                 continue;
             }
@@ -849,9 +869,26 @@ fn evaluate_config_loosening(diff: &SemanticDiff, findings: &mut Vec<Finding>) {
             let mypy_ignore = key == "ignore_errors" && value.as_deref() == Some("true");
             let eslint_off = is_eslint && matches!(value.as_deref(), Some("off") | Some("0"));
 
-            if strictness_off || mypy_ignore || eslint_off {
+            if (strictness_off || mypy_ignore || eslint_off) && !scoped_section && !new_file {
                 push_guard(findings, RuleId::RunnerConfigTamper, path, Some(idx + 1), line,
                     format!("Checker strictness loosened in '{}': '{}'", path, line), line);
+            } else if strictness_off || mypy_ignore || eslint_off {
+                let id = Finding::compute_id(RuleId::RunnerConfigTamper, path, line);
+                let why = if new_file { "new config file" } else { "per-module override" };
+                findings.push(Finding {
+                    id: id.clone(),
+                    rule_id: RuleId::RunnerConfigTamper,
+                    tier: RuleTier::Report,
+                    verdict: Verdict::Review {
+                        finding_id: id,
+                        evidence: format!("Strictness relaxed ({}) in '{}': '{}'", why, path, line),
+                    },
+                    file_path: path.clone(),
+                    line_number: Some(idx + 1),
+                    test_name: None,
+                    message: format!("Strictness relaxed in a {} in '{}': '{}'.", why, path, line),
+                    evidence: line.to_string(),
+                });
             } else if is_py_config
                 && (LINT_IGNORE_KEYS.contains(&current_key.as_str()) || LINT_IGNORE_KEYS.contains(&section_key.as_str()))
             {
@@ -889,8 +926,6 @@ fn blanket_suppression(path: &str, line: &str) -> Option<&'static str> {
                 Some("mypy: ignore-errors")
             } else if c == "type: ignore" && line.starts_with('#') {
                 Some("module-level type: ignore")
-            } else if c == "noqa" {
-                Some("bare noqa")
             } else if c.starts_with("pylint: disable=all") {
                 Some("pylint: disable=all")
             } else {

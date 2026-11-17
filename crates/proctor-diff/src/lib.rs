@@ -273,20 +273,49 @@ impl SemanticDiff {
 }
 
 const RENAME_SIMILARITY: f32 = 0.75;
+const RENAME_MIN_TOKENS: usize = 8;
 
-fn body_tokens(body: &str, own_name: &str) -> HashSet<String> {
-    body.split(|c: char| !(c.is_alphanumeric() || c == '_'))
-        .filter(|t| !t.is_empty())
-        .map(|t| if t == own_name { "$self".to_string() } else { t.to_string() })
-        .collect()
+/// Ordered tokens: identifiers/numbers as words, every other non-space char (operators) as its own token.
+/// The symbol's own name is normalized so recursion survives a rename.
+fn body_tokens(body: &str, own_name: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut word = String::new();
+    let flush = |w: &mut String, out: &mut Vec<String>| {
+        if !w.is_empty() {
+            out.push(if w == own_name { "$self".into() } else { std::mem::take(w) });
+            w.clear();
+        }
+    };
+    for c in body.chars() {
+        if c.is_alphanumeric() || c == '_' {
+            word.push(c);
+        } else {
+            flush(&mut word, &mut out);
+            if !c.is_whitespace() {
+                out.push(c.to_string());
+            }
+        }
+    }
+    flush(&mut word, &mut out);
+    out
 }
 
-fn jaccard(a: &HashSet<String>, b: &HashSet<String>) -> f32 {
-    let union = a.union(b).count();
-    if union == 0 {
-        return 1.0;
+/// Dice coefficient over ordered token bigrams (multiset), so order and operators count.
+fn bigram_similarity(a: &[String], b: &[String]) -> f32 {
+    let grams = |t: &[String]| {
+        let mut m: HashMap<(String, String), usize> = HashMap::new();
+        for w in t.windows(2) {
+            *m.entry((w[0].clone(), w[1].clone())).or_default() += 1;
+        }
+        m
+    };
+    let (ga, gb) = (grams(a), grams(b));
+    let total = a.len().saturating_sub(1) + b.len().saturating_sub(1);
+    if total == 0 {
+        return 0.0;
     }
-    a.intersection(b).count() as f32 / union as f32
+    let shared: usize = ga.iter().map(|(k, n)| (*n).min(*gb.get(k).unwrap_or(&0))).sum();
+    2.0 * shared as f32 / total as f32
 }
 
 /// Per changed file: which definitions changed, and which deletions are really renames.
@@ -316,14 +345,20 @@ fn compute_symbol_changes(
 
         for old in deleted {
             let old_tokens = body_tokens(&base[old], old);
-            let best = added
-                .iter()
-                .enumerate()
-                .map(|(i, new)| (i, jaccard(&old_tokens, &body_tokens(&head[*new], new))))
-                .filter(|(_, sim)| *sim >= RENAME_SIMILARITY)
-                .max_by(|a, b| a.1.total_cmp(&b.1));
-            match best {
-                Some((i, sim)) => {
+            let mut scored: Vec<(usize, f32)> = if old_tokens.len() < RENAME_MIN_TOKENS {
+                Vec::new() // stubs like `raise NotImplementedError` match anything
+            } else {
+                added
+                    .iter()
+                    .enumerate()
+                    .map(|(i, new)| (i, bigram_similarity(&old_tokens, &body_tokens(&head[*new], new))))
+                    .filter(|(_, sim)| *sim >= RENAME_SIMILARITY)
+                    .collect()
+            };
+            scored.sort_by(|a, b| b.1.total_cmp(&a.1));
+            let tie = scored.len() > 1 && scored[0].1 == scored[1].1;
+            match scored.first().filter(|_| !tie) {
+                Some(&(i, sim)) => {
                     let new = added.remove(i);
                     if sim < 1.0 {
                         changed.insert(old.clone());
@@ -490,6 +525,27 @@ class User:
         assert!(!diff.changed_symbols.contains("total"));
         // Moved to another file: not deleted.
         assert!(!diff.is_reference_orphaned(&["helper".to_string()]));
+    }
+
+    #[test]
+    fn test_rename_rejects_stubs_ties_and_operator_flips() {
+        let sim = |a: &str, b: &str| bigram_similarity(&body_tokens(a, "x"), &body_tokens(b, "y"));
+        // Operator flip is visible now (sets of words would call these identical).
+        assert!(sim("total = a * b\nreturn total * rate", "total = a + b\nreturn total * rate") < 1.0);
+
+        // Stub deleted + unrelated stub added: not a rename, so the old name stays deleted.
+        let base = HashMap::from([("app/m.py".to_string(), "def old_stub():\n    raise NotImplementedError\n".to_string())]);
+        let head = HashMap::from([("app/m.py".to_string(), "def new_stub():\n    raise NotImplementedError\n".to_string())]);
+        let diff = SemanticDiff::build(&base, &head).unwrap();
+        assert!(diff.renamed_symbols.is_empty());
+        assert!(diff.is_reference_orphaned(&["old_stub".to_string()]));
+
+        // Two identical candidates: ambiguous, not a rename.
+        let body = "    s = 0\n    for i in items:\n        s += i.price * i.qty\n    return s\n";
+        let base = HashMap::from([("app/m.py".to_string(), format!("def legacy(items):\n{body}"))]);
+        let head = HashMap::from([("app/m.py".to_string(), format!("def a(items):\n{body}\ndef b(items):\n{body}"))]);
+        let diff = SemanticDiff::build(&base, &head).unwrap();
+        assert!(diff.renamed_symbols.is_empty());
     }
 
     #[test]

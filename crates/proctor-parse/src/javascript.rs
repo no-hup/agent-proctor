@@ -67,7 +67,7 @@ pub fn parse_javascript_source_file(
     let mut string_literals = Vec::new();
     let mut symbol_bodies = std::collections::HashMap::new();
 
-    extract_js_source_symbols(root, source, &mut defined_symbols, &mut symbol_bodies, &mut string_literals);
+    extract_js_source_symbols(root, source, false, &mut defined_symbols, &mut symbol_bodies, &mut string_literals);
 
     Ok(ParsedSourceFile {
         file_path: file_path.to_string(),
@@ -148,6 +148,9 @@ fn extract_js_test(
 
     let mut body_symbols = Vec::new();
     extract_js_identifiers_and_props(call_node, source, &mut body_symbols);
+    let mut locals = std::collections::HashSet::new();
+    collect_js_locals(call_node, source, &mut locals);
+    body_symbols.retain(|s| !locals.contains(s));
 
     ParsedTest {
         id: test_id,
@@ -247,6 +250,19 @@ fn extract_js_identifiers_and_props(node: Node, source: &str, symbols: &mut Vec<
     }
 }
 
+/// Names declared inside a test (`const x = ...`): the test's own variables.
+fn collect_js_locals(node: Node, source: &str, locals: &mut std::collections::HashSet<String>) {
+    let cursor = &mut node.walk();
+    for child in node.children(cursor) {
+        if child.kind() == "variable_declarator" {
+            if let Some(n) = child.child_by_field_name("name").filter(|n| n.kind() == "identifier") {
+                locals.insert(n.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+            }
+        }
+        collect_js_locals(child, source, locals);
+    }
+}
+
 fn extract_js_mock_call(node: Node, source: &str) -> Option<ParsedMock> {
     if node.kind() != "call_expression" {
         return None;
@@ -279,9 +295,11 @@ fn extract_first_string_arg(call_node: Node, source: &str) -> Option<String> {
     None
 }
 
+/// Records top-level and class-member definitions only; locals inside function bodies are skipped.
 fn extract_js_source_symbols(
     node: Node,
     source: &str,
+    in_function: bool,
     defined_symbols: &mut Vec<String>,
     symbol_bodies: &mut std::collections::HashMap<String, String>,
     string_literals: &mut Vec<String>,
@@ -289,7 +307,7 @@ fn extract_js_source_symbols(
     let cursor = &mut node.walk();
     for child in node.children(cursor) {
         match child.kind() {
-            "function_declaration" | "class_declaration" | "method_definition" => {
+            "function_declaration" | "class_declaration" | "method_definition" if !in_function => {
                 if let Some(name_node) = child.child_by_field_name("name") {
                     let name = name_node.utf8_text(source.as_bytes()).unwrap_or("");
                     if !name.is_empty() {
@@ -299,7 +317,7 @@ fn extract_js_source_symbols(
                     }
                 }
             }
-            "variable_declarator" => {
+            "variable_declarator" if !in_function => {
                 if let Some(name_node) = child.child_by_field_name("name") {
                     let name = name_node.utf8_text(source.as_bytes()).unwrap_or("");
                     if !name.is_empty() {
@@ -318,7 +336,9 @@ fn extract_js_source_symbols(
             }
             _ => {}
         }
-        extract_js_source_symbols(child, source, defined_symbols, symbol_bodies, string_literals);
+        let nested = in_function
+            || matches!(child.kind(), "statement_block" | "arrow_function" | "function_expression" | "function");
+        extract_js_source_symbols(child, source, nested, defined_symbols, symbol_bodies, string_literals);
     }
 }
 

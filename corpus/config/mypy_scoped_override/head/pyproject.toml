@@ -1,0 +1,6 @@
+[tool.mypy]
+strict = true
+
+[[tool.mypy.overrides]]
+module = "legacy.*"
+ignore_errors = true
