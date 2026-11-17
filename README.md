@@ -214,6 +214,16 @@ fi
 
 ---
 
+## Agent Self-Proctoring (CLAUDE.md / AGENTS.md / Cursor Rules)
+
+Add this to your repository's agent instructions:
+
+> Before declaring a task complete or opening a PR, run:
+> `proctor scan --format markdown`
+> Ensure there are zero blocking findings and include the generated receipt in your PR summary.
+
+---
+
 ## Core Detection Rules
 
 * **`PROCTOR-001` (Assertion Lock)**: Tracks exact $\to$ weak $\to$ vacuous downgrades per test. Downgrades are justified only if the production code deleted an identifier or attribute the assertion referenced (Orphaned Reference rule).

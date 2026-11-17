@@ -404,10 +404,28 @@ fn apply_renames(text: &str, renames: &std::collections::HashMap<String, String>
     out
 }
 
+/// Dotted module paths for every file in the diff: `src/app/billing.ts` -> `src.app.billing` and `app.billing`.
+fn repo_modules(diff: &SemanticDiff) -> HashSet<String> {
+    let mut out = HashSet::new();
+    for path in diff.raw_base_files.keys().chain(diff.raw_head_files.keys()) {
+        let stem = match path.rsplit_once('.') {
+            Some((stem, ext)) if ["py", "js", "ts", "jsx", "tsx", "mjs", "cjs"].contains(&ext) => stem,
+            _ => continue,
+        };
+        let module = stem.trim_end_matches("/__init__").trim_end_matches("/index").replace('/', ".").to_lowercase();
+        if let Some(rest) = module.strip_prefix("src.") {
+            out.insert(rest.to_string());
+        }
+        out.insert(module);
+    }
+    out
+}
+
 /// Helper to test if a mock target is an in-repo symbol or file
 fn is_in_repo_target(
     target: &str,
     in_repo_symbols: &HashSet<String>,
+    repo_modules: &HashSet<String>,
 ) -> bool {
     let target_lower = target.to_lowercase();
     let target_clean = target_lower
@@ -428,12 +446,11 @@ fn is_in_repo_target(
         return true;
     }
 
-    // 3. Check filesystem existence for target module (e.g. app.billing -> app/billing.py)
-    let as_path = target_clean.replace('.', "/");
-    if Path::new(&format!("{}.py", as_path)).exists()
-        || Path::new(&format!("{}.ts", as_path)).exists()
-        || Path::new(&format!("{}.js", as_path)).exists()
-        || Path::new(&as_path).exists()
+    // 3. Target module is a file in this diff (e.g. app.billing.charge -> app/billing.py).
+    // Resolved from git content only, never the host disk, so results don't depend on cwd.
+    if repo_modules
+        .iter()
+        .any(|m| target_clean == *m || target_clean.starts_with(&format!("{}.", m)))
     {
         return true;
     }
@@ -470,6 +487,7 @@ fn is_mock_allowed(target: &str, allow_mocks: &[String]) -> bool {
 
 /// PROCTOR-002: Detects mocks added to in-repo production code (per-test and top-of-file harness).
 fn evaluate_shadow_mocks(diff: &SemanticDiff, policy: &Policy, findings: &mut Vec<Finding>) {
+    let modules = repo_modules(diff);
     // Collect all in-repo defined production symbols and modules from diff
     let mut in_repo_symbols = HashSet::new();
     for (path, src) in &diff.head_sources {
@@ -493,7 +511,7 @@ fn evaluate_shadow_mocks(diff: &SemanticDiff, policy: &Policy, findings: &mut Ve
             if !base_mock_targets.contains(mock.target.as_str()) {
                 let allowed = is_mock_allowed(&mock.target, &policy.allow_mocks);
 
-                if !allowed && is_in_repo_target(&mock.target, &in_repo_symbols) {
+                if !allowed && is_in_repo_target(&mock.target, &in_repo_symbols, &modules) {
                     let test_name = pair.head_test.id.canonical_name();
                     let id = Finding::compute_id(RuleId::ShadowMock, &test_name, &mock.target);
 
@@ -561,7 +579,7 @@ fn evaluate_shadow_mocks(diff: &SemanticDiff, policy: &Policy, findings: &mut Ve
         if !base_harness_targets.contains(mock.target.as_str()) {
             let allowed = is_mock_allowed(&mock.target, &policy.allow_mocks);
 
-            if !allowed && is_in_repo_target(&mock.target, &in_repo_symbols) {
+            if !allowed && is_in_repo_target(&mock.target, &in_repo_symbols, &modules) {
                 let id = Finding::compute_id(RuleId::ShadowMock, "harness_mock", &mock.target);
                 let target_clean = mock.target.to_lowercase();
                 let is_direct_diff_target = in_repo_symbols.iter().any(|sym| {

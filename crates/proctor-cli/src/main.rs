@@ -15,7 +15,7 @@ mod sarif;
 #[command(
     name = "proctor",
     author = "The Proctor Team",
-    version = "0.1.0",
+    version = env!("CARGO_PKG_VERSION"),
     about = "Deterministic PR integrity and anticheat gate for autonomous AI coding agents",
     long_about = "proctor prevents specification gaming (assertion demolition, shadow mocking, and CI workflow sabotage) by autonomous coding agents like Devin, Claude Code, and Cursor."
 )]
@@ -131,7 +131,7 @@ fn main() -> Result<()> {
 
     match cli.command {
         Some(Commands::Version) => {
-            println!("agent-proctor v0.1.0 (deterministic AST verification)");
+            println!("agent-proctor v{} (deterministic AST verification)", env!("CARGO_PKG_VERSION"));
             println!("Supported languages: Python (pytest/unittest), JavaScript/TypeScript (Jest/Vitest)");
             println!("Engine: Tree-sitter 0.22, Blake3 cryptographic fingerprints");
             Ok(())

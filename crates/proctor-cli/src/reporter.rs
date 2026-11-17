@@ -291,13 +291,24 @@ pub fn render_receipt(diff: &proctor_diff::SemanticDiff, findings: &[Finding]) -
 
     if !findings.is_empty() {
         out += "\n<details><summary>Findings</summary>\n\n| Tier | Rule | Location | Detail |\n|---|---|---|---|\n";
-        for f in findings {
+        // Guard findings always listed in full; Report findings capped so huge PRs stay readable.
+        const MAX_REPORT_ROWS: usize = 10;
+        let (guards, reports): (Vec<&Finding>, Vec<&Finding>) = findings.iter().partition(|f| f.tier == RuleTier::Guard);
+        for f in guards.iter().chain(reports.iter().take(MAX_REPORT_ROWS)) {
             let loc = match f.line_number {
                 Some(l) => format!("{}:{}", f.file_path, l),
                 None => f.file_path.clone(),
             };
             let detail = f.message.replace('|', "\\|").replace('\n', " ");
             out += &format!("| {:?} | `{}` | `{}` | {} |\n", f.tier, f.rule_id.code(), loc, detail);
+        }
+        if reports.len() > MAX_REPORT_ROWS {
+            let rest = &reports[MAX_REPORT_ROWS..];
+            let files: HashSet<&str> = rest.iter().map(|f| f.file_path.as_str()).collect();
+            out += &format!(
+                "\n… and {} more review-tier findings across {} file{} (full list: `proctor scan --format json`).\n",
+                rest.len(), files.len(), if files.len() == 1 { "" } else { "s" }
+            );
         }
         out += "\n</details>\n";
     }
@@ -324,5 +335,33 @@ mod tests {
         let same = HashMap::from([("README.md".to_string(), "x".to_string())]);
         let diff = proctor_diff::SemanticDiff::build(&same, &same).unwrap();
         assert_eq!(render_receipt(&diff, &[]).lines().count(), 1);
+    }
+
+    #[test]
+    fn receipt_caps_report_rows_and_lists_guards_first() {
+        use proctor_core::{RuleId, RuleTier, Verdict};
+        let mk = |i: usize, tier: RuleTier| Finding {
+            id: format!("id{i}"),
+            rule_id: RuleId::AssertionLock,
+            tier,
+            verdict: match tier {
+                RuleTier::Guard => Verdict::Block { rule: RuleId::AssertionLock, evidence: String::new() },
+                RuleTier::Report => Verdict::Review { finding_id: format!("id{i}"), evidence: String::new() },
+            },
+            file_path: format!("tests/t{}.py", i % 3),
+            line_number: Some(i),
+            test_name: None,
+            message: format!("msg{i}"),
+            evidence: String::new(),
+        };
+        let mut findings: Vec<Finding> = (0..25).map(|i| mk(i, RuleTier::Report)).collect();
+        findings.push(mk(99, RuleTier::Guard));
+        let empty = HashMap::new();
+        let diff = proctor_diff::SemanticDiff::build(&empty, &empty).unwrap();
+        let r = render_receipt(&diff, &findings);
+        let rows: Vec<&str> = r.lines().filter(|l| l.starts_with("| Guard") || l.starts_with("| Report")).collect();
+        assert_eq!(rows.len(), 11);
+        assert!(rows[0].starts_with("| Guard"));
+        assert!(r.contains("15 more review-tier findings across 3 files"), "{r}");
     }
 }
