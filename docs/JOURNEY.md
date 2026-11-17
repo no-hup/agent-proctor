@@ -184,30 +184,33 @@ To avoid toolchain nightmares and environment fragility, we enforce a strict arc
 
 ## 9. Actionable 30-Day Execution Roadmap
 
-### Week 1: Perimeter Hardening & Receipt Foundation
-- [ ] **Patch the 3 Code Lattice Holes:**
-  - Link each assertion to its referenced definitions; block when those definitions are unchanged, demote only when referenced definitions actually changed.
+### Week 1: Perimeter Hardening & Receipt Foundation (SHIPPED in v0.2.0)
+- [x] **Patch the 3 Code Lattice Holes:**
+  - Strict assertion-to-definition symbol linkage; demotions require touched production definitions.
   - Require `.all()` production references to be deleted before marking a test deletion justified.
-  - Detect renames within the same module by AST body similarity.
-- [ ] **Config Loosening & Suppression Rules:**
-  - Add diff rules for `tsconfig.json`, `pyproject.toml`, and ruff configurations.
-  - Flag whole-file `@ts-nocheck` and `# noqa` suppressions.
-- [ ] **PR Receipt Generator:**
-  - Update `proctor-action` to post the standardized Markdown Test-Change Receipt to `$GITHUB_STEP_SUMMARY`.
-- [ ] **Calibrate OpenHands & LiteLLM:**
-  - Hand-label the 180 and 270 findings to isolate refactor noise, publish the calibrated precision table, and send follow-up corrections.
+  - Detect intra-module renames with 75% token similarity and minimum 8 tokens.
+  - Fixed mock target resolution determinism leak (100% git tree diff resolved, zero host `cwd` disk dependency).
+- [x] **Config Loosening & Suppression Rules:**
+  - Added `PROCTOR-004` (runner config loosening: dropping `--strict`, lowering `fail_under`).
+  - Added `PROCTOR-008` (blanket suppressions: `# noqa: ALL`, `/* eslint-disable */`, `@ts-nocheck`).
+- [x] **PR Receipt Generator:**
+  - Built `--format markdown` and `--receipt <path>` in CLI.
+  - Collapsed review-tier report noise in receipts while elevating Guard findings.
+  - Pinned `v0.2.0` default in `proctor-action` composite action.
+- [x] **Calibrate OpenHands & LiteLLM & 5-Repo Audit:**
+  - Audited 449 commits across Aider, SWE-agent, Browser-use, OpenHands, and LiteLLM.
+  - Documented empirical shift: 13.6% noise reduction on repos with deletions, and zero false positives on Go/Rust unanalyzed suites.
+  - Published comprehensive comparative audit in [`docs/audit/V0_1_VS_V0_2_COMPARISON.md`](file:///Users/shaurya/Desktop/moonshot/agent-proctor/docs/audit/V0_1_VS_V0_2_COMPARISON.md).
 
-### Week 2: Dynamic Red/Green Verification (Pytest)
+### Week 2: Dynamic Red/Green Verification (Pytest & Vitest) [Next Phase]
 - [ ] Add `proctor verify --runner pytest` in `proctor-cli`.
 - [ ] Create ephemeral base worktree, execute added/modified tests against base, and classify failure modes (`AssertionError` vs `ImportError`).
 - [ ] Integrate verification badges into the PR receipt.
 
-### Week 3: Jest/Vitest & Descartes Extreme Mutation
-- [ ] Extend red/green verification to Jest and Vitest.
-- [ ] Implement Descartes extreme mutation in `proctor-probe`: synthesize single-mutants (`raise NotImplementedError`) for weakened assertion adjudication.
+### Week 3: Extreme Mutation as Adjudicator (Descartes Probe)
+- [ ] Implement Descartes extreme mutation in `proctor-probe`: synthesize single-mutants (`raise NotImplementedError` / return empty) for weakened assertion adjudication.
 
-### Week 4: Multi-Repo Benchmark & Receipt Outreach
-- [ ] Audit 10 high-velocity repositories and publish the full DelTest-style empirical matrix.
+### Week 4: Multi-Repo Benchmark & Pull Outreach
 - [ ] **Pivot Maintainer Outreach:** Instead of sending cold warnings, send maintainers the **verified receipts generated for their last 5 merged PRs**. It demonstrates instant time-saving value with zero Patrizio risk.
 
 ---
