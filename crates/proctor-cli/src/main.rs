@@ -40,6 +40,10 @@ struct Cli {
 
     #[arg(long)]
     experimental_probe: bool,
+
+    /// Append the markdown Test-Change Receipt to this file (e.g. $GITHUB_STEP_SUMMARY)
+    #[arg(long)]
+    receipt: Option<PathBuf>,
 }
 
 #[derive(Subcommand)]
@@ -63,6 +67,10 @@ enum Commands {
 
         #[arg(long)]
         experimental_probe: bool,
+
+        /// Append the markdown Test-Change Receipt to this file (e.g. $GITHUB_STEP_SUMMARY)
+        #[arg(long)]
+        receipt: Option<PathBuf>,
     },
     /// Run ephemeral mutation probe in an isolated git worktree
     Probe {
@@ -135,6 +143,7 @@ fn main() -> Result<()> {
             sarif,
             strict,
             experimental_probe,
+            receipt,
         }) => run_scan(
             &base,
             head.as_deref(),
@@ -142,6 +151,7 @@ fn main() -> Result<()> {
             sarif,
             strict,
             experimental_probe,
+            receipt,
         ),
         Some(Commands::Probe {
             base,
@@ -168,6 +178,7 @@ fn main() -> Result<()> {
             cli.sarif,
             cli.strict,
             cli.experimental_probe,
+            cli.receipt,
         ),
     }
 }
@@ -179,6 +190,7 @@ fn run_scan(
     sarif_path: Option<PathBuf>,
     strict: bool,
     experimental_probe: bool,
+    receipt_path: Option<PathBuf>,
 ) -> Result<()> {
     // 1. Immutably anchor policy to the base ref
     let mut policy = git::load_policy_from_base(base);
@@ -271,6 +283,12 @@ fn run_scan(
         std::fs::write(&path, sarif_str)?;
     }
 
+    // 6b. Append the Test-Change Receipt (step summaries are shared files, so append)
+    if let Some(path) = receipt_path {
+        let mut file = std::fs::OpenOptions::new().create(true).append(true).open(&path)?;
+        writeln!(file, "{}", reporter::render_receipt(&diff, &findings))?;
+    }
+
     // 7. Compute overall verdict & rule tiering
     let has_guard_block = findings.iter().any(|f| {
         f.tier == RuleTier::Guard || matches!(f.verdict, Verdict::Block { .. })
@@ -319,19 +337,7 @@ fn run_scan(
             println!("{}", serde_json::to_string_pretty(&sarif_val)?);
         }
         OutputFormat::Markdown => {
-            println!("### 🛡️ agent-proctor Scan Report");
-            if findings.is_empty() {
-                println!("✅ **PASS:** All assertions and test suite integrity constraints preserved.");
-            } else {
-                println!("⚠️ **Detected {} integrity finding(s):**\n", findings.len());
-                println!("| Tier | Rule | Location | Context |");
-                println!("| :--- | :--- | :--- | :--- |");
-                for f in &findings {
-                    let ctx = f.test_name.as_deref().unwrap_or(&f.evidence).replace('|', "\\|").replace('\n', " ");
-                    let line_no = f.line_number.unwrap_or(1);
-                    println!("| `{:?}` | `{}` | `{}:{}` | {} |", f.tier, f.rule_id.code(), f.file_path, line_no, ctx);
-                }
-            }
+            print!("{}", reporter::render_receipt(&diff, &findings));
         }
     }
 
@@ -745,6 +751,7 @@ fn run_eval(
                             | RuleId::RunnerConfigTamper
                             | RuleId::SnapshotIntegrity
                             | RuleId::PolicyTamper
+                            | RuleId::BlanketSuppression
                     )
                 });
             }

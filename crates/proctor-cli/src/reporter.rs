@@ -198,3 +198,80 @@ pub fn write_github_step_summary(path: &str, findings: &[Finding], base_ref: &st
 
     Ok(())
 }
+
+/// Renders the PR Test-Change Receipt: what happened to tests, gates, and suppressions in this diff.
+pub fn render_receipt(diff: &proctor_diff::SemanticDiff, findings: &[Finding]) -> String {
+    use proctor_core::{AssertionStrength, RuleId, RuleTier};
+    use std::collections::HashSet;
+
+    let flagged_tests: HashSet<&str> = findings.iter().filter_map(|f| f.test_name.as_deref()).collect();
+    let exact = |t: &proctor_parse::ParsedTest| t.assertions.iter().filter(|a| a.strength == AssertionStrength::Exact).count();
+    let count_rule = |rules: &[RuleId]| findings.iter().filter(|f| rules.contains(&f.rule_id)).count();
+
+    // Added
+    let added = diff.new_tests.len();
+    let added_no_exact = diff.new_tests.iter().filter(|t| exact(t) == 0).count();
+
+    // Modified
+    let (mut strengthened, mut flagged_mod, mut neutral) = (0, 0, 0);
+    for p in diff.paired_tests.iter().filter(|p| p.base_test.id.body_content_hash != p.head_test.id.body_content_hash) {
+        if flagged_tests.contains(p.head_test.id.canonical_name().as_str()) {
+            flagged_mod += 1;
+        } else if exact(&p.head_test) > exact(&p.base_test) {
+            strengthened += 1;
+        } else {
+            neutral += 1;
+        }
+    }
+    let modified = strengthened + flagged_mod + neutral;
+
+    // Deleted
+    let deleted = diff.deleted_tests.len();
+    let deleted_flagged = diff.deleted_tests.iter().filter(|t| flagged_tests.contains(t.id.canonical_name().as_str())).count();
+
+    let gates = count_rule(&[RuleId::CiWorkflowSabotage, RuleId::RunnerConfigTamper, RuleId::PolicyTamper, RuleId::SnapshotIntegrity]);
+    let suppressions = count_rule(&[RuleId::BlanketSuppression]);
+    let mocks = count_rule(&[RuleId::ShadowMock]);
+
+    let ok = |n: usize| if n == 0 { "✅" } else { "⚠️" };
+    let mut out = String::from("### 📋 Test-Change Receipt (agent-proctor)\n\n");
+    out += "| Category | Count | Status |\n|---|---|---|\n";
+    out += &format!(
+        "| **Added tests** | {} | {} |\n",
+        added,
+        if added == 0 { "—".to_string() } else if added_no_exact == 0 { "✅ all have exact assertions".to_string() } else { format!("⚠️ {} without an exact assertion", added_no_exact) }
+    );
+    out += &format!(
+        "| **Modified tests** | {} | {} {} strengthened, {} neutral, {} flagged |\n",
+        modified, ok(flagged_mod), strengthened, neutral, flagged_mod
+    );
+    out += &format!(
+        "| **Deleted tests** | {} | {} {} obsolete (production symbols removed in this PR), {} flagged |\n",
+        deleted, ok(deleted_flagged), deleted - deleted_flagged, deleted_flagged
+    );
+    out += &format!("| **Configs & CI gates** | {} | {} |\n", gates, if gates == 0 { "✅ no loosening" } else { "⚠️ loosened" });
+    out += &format!("| **Blanket suppressions** | {} | {} |\n", suppressions, if suppressions == 0 { "✅ none added" } else { "⚠️ added" });
+    out += &format!("| **Internal mocks** | {} | {} |\n", mocks, if mocks == 0 { "✅ none added" } else { "⚠️ added" });
+
+    let blocks = findings.iter().filter(|f| f.tier == RuleTier::Guard).count();
+    let reviews = findings.len() - blocks;
+    out += &match (blocks, reviews) {
+        (0, 0) => "\n**Verdict:** 🟢 Nothing to review in the test diff.\n".to_string(),
+        (0, r) => format!("\n**Verdict:** 🟡 {} item{} worth a look.\n", r, if r == 1 { "" } else { "s" }),
+        (b, _) => format!("\n**Verdict:** 🔴 {} blocking finding{}.\n", b, if b == 1 { "" } else { "s" }),
+    };
+
+    if !findings.is_empty() {
+        out += "\n<details><summary>Findings</summary>\n\n| Tier | Rule | Location | Detail |\n|---|---|---|---|\n";
+        for f in findings {
+            let loc = match f.line_number {
+                Some(l) => format!("{}:{}", f.file_path, l),
+                None => f.file_path.clone(),
+            };
+            let detail = f.message.replace('|', "\\|").replace('\n', " ");
+            out += &format!("| {:?} | `{}` | `{}` | {} |\n", f.tier, f.rule_id.code(), loc, detail);
+        }
+        out += "\n</details>\n";
+    }
+    out
+}

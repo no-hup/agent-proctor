@@ -126,4 +126,9 @@ runs:
           ARGS="$ARGS --experimental-probe"
         fi
 
+        # Test-Change Receipt in the job summary (binaries >= v0.2.0)
+        if [ -n "$GITHUB_STEP_SUMMARY" ] && proctor scan --help 2>/dev/null | grep -q -- '--receipt'; then
+          ARGS="$ARGS --receipt $GITHUB_STEP_SUMMARY"
+        fi
+
         proctor scan $ARGS

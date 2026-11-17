@@ -114,6 +114,8 @@ pub enum RuleId {
     ParametrizeRowDrop,
     /// F6: proctor.toml policy configuration modified in PR.
     PolicyTamper,
+    /// F7: File-level checker suppression added (`@ts-nocheck`, bare `eslint-disable`, `# mypy: ignore-errors`).
+    BlanketSuppression,
 }
 
 impl RuleId {
@@ -126,6 +128,7 @@ impl RuleId {
             RuleId::SnapshotIntegrity => "PROCTOR-005",
             RuleId::ParametrizeRowDrop => "PROCTOR-006",
             RuleId::PolicyTamper => "PROCTOR-007",
+            RuleId::BlanketSuppression => "PROCTOR-008",
         }
     }
 
@@ -138,6 +141,7 @@ impl RuleId {
             RuleId::SnapshotIntegrity => "Snapshot File Corrupted or Shrunk",
             RuleId::ParametrizeRowDrop => "Parametrized Test Case Removed",
             RuleId::PolicyTamper => "Policy Configuration Tampered in PR",
+            RuleId::BlanketSuppression => "Blanket Checker Suppression Added",
         }
     }
 
@@ -150,6 +154,7 @@ impl RuleId {
             RuleId::SnapshotIntegrity => RuleTier::Guard,
             RuleId::ParametrizeRowDrop => RuleTier::Guard,
             RuleId::PolicyTamper => RuleTier::Guard,
+            RuleId::BlanketSuppression => RuleTier::Report,
         }
     }
 }

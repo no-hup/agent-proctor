@@ -14,6 +14,19 @@ fn get_corpus_dir() -> PathBuf {
         .join("corpus")
 }
 
+/// Loads every file under `root` keyed by its path relative to `root`.
+fn load_tree(root: &Path, dir: &Path, files: &mut HashMap<String, String>) {
+    for entry in fs::read_dir(dir).unwrap().flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            load_tree(root, &path, files);
+        } else {
+            let rel = path.strip_prefix(root).unwrap().to_string_lossy().replace('\\', "/");
+            files.insert(rel, fs::read_to_string(&path).unwrap());
+        }
+    }
+}
+
 fn collect_corpus_case_dirs(dir: &Path, case_dirs: &mut Vec<PathBuf>) {
     if let Ok(entries) = fs::read_dir(dir) {
         for entry in entries.flatten() {
@@ -102,6 +115,14 @@ fn test_corpus_fixtures_match_expected_verdicts() {
             let head_yml = fs::read_to_string(case_dir.join("head.yml")).unwrap();
             base_files.insert(".github/workflows/ci.yml".to_string(), base_yml);
             head_files.insert(".github/workflows/ci.yml".to_string(), head_yml);
+        }
+
+        // 4. Arbitrary multi-file layouts: <case>/base/** and <case>/head/**
+        if case_dir.join("base").is_dir() {
+            load_tree(&case_dir.join("base"), &case_dir.join("base"), &mut base_files);
+        }
+        if case_dir.join("head").is_dir() {
+            load_tree(&case_dir.join("head"), &case_dir.join("head"), &mut head_files);
         }
 
         assert!(

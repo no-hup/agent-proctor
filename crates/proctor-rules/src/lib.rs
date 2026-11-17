@@ -39,6 +39,12 @@ pub fn evaluate_rules(
     // 8. PROCTOR-006: Parametrize Row Drops
     evaluate_parametrize_rows(diff, &mut findings);
 
+    // 9. PROCTOR-004 (extension): Type-checker / linter / coverage config loosening
+    evaluate_config_loosening(diff, &mut findings);
+
+    // 10. PROCTOR-008: Blanket checker suppressions
+    evaluate_blanket_suppressions(diff, &mut findings);
+
     // Filter out findings accepted by an authorized human reviewer via waivers / acks.
     // Guard findings require maintainer_waivers; author_acks only suppress Report tier.
     findings.retain(|f| !waivers.is_suppressed(f));
@@ -198,10 +204,13 @@ fn evaluate_assertion_lock(diff: &SemanticDiff, policy: &Policy, findings: &mut 
         // 1a(ii). Check for modified, weakened, or deleted assertions via AssertionStrength lattice
         let head_texts: HashSet<&str> =
             head_test.assertions.iter().map(|a| a.text.as_str()).collect();
-        let head_max_strength = head_test.assertions.iter().map(|a| a.strength).max();
+        let has_production_changes = !diff.head_sources.is_empty() || !diff.base_sources.is_empty();
+        let linked = diff.test_links_changed_code(base_test, head_test);
 
         for base_assert in &base_test.assertions {
-            if !head_texts.contains(base_assert.text.as_str()) {
+            // A test that only follows a production rename is not a modification.
+            let followed = apply_renames(&base_assert.text, &diff.renamed_symbols);
+            if !head_texts.contains(base_assert.text.as_str()) && !head_texts.contains(followed.as_str()) {
                 // This assertion was modified or removed
                 let justified = diff.is_reference_orphaned(&base_assert.referenced_symbols);
 
@@ -212,19 +221,44 @@ fn evaluate_assertion_lock(diff: &SemanticDiff, policy: &Policy, findings: &mut 
                         &base_assert.text,
                     );
 
-                    let was_weakened = match head_max_strength {
-                        Some(max_s) => max_s < base_assert.strength,
-                        None => true,
+                    // Weakened = the test now has fewer assertions at or above this one's strength.
+                    let at_least = |t: &proctor_parse::ParsedTest| {
+                        t.assertions.iter().filter(|a| a.strength >= base_assert.strength).count()
+                    };
+                    let was_weakened = at_least(head_test) < at_least(base_test);
+
+                    // Linkage: only a change to code this test actually references can explain
+                    // a changed assertion. An unrelated production edit does not.
+                    let guard_reason = if !has_production_changes {
+                        Some("while production code was untouched")
+                    } else if was_weakened && !linked {
+                        Some("while none of the production code it references changed")
+                    } else {
+                        None
                     };
 
-                    // Check linkage: did any production source file change?
-                    let has_production_changes = !diff.head_sources.is_empty();
-
-                    let (verdict, tier, message) = if has_production_changes {
+                    let (verdict, tier, message) = if let Some(reason) = guard_reason {
+                        (
+                            Verdict::Block {
+                                rule: RuleId::AssertionLock,
+                                evidence: format!(
+                                    "Assertion modified/dropped {}: '{}'",
+                                    reason, base_assert.text
+                                ),
+                            },
+                            RuleTier::Guard,
+                            format!(
+                                "Assertion {} in test '{}' {}.",
+                                if was_weakened { "weakened or removed" } else { "modified" },
+                                test_name,
+                                reason
+                            ),
+                        )
+                    } else {
                         let msg = if was_weakened {
                             format!(
-                                "Assertion weakened in test '{}' ({:?} -> {:?}) without orphaned symbol justification.",
-                                test_name, base_assert.strength, head_max_strength
+                                "Assertion weakened in test '{}' alongside changes to code it references. Requires reviewer waiver.",
+                                test_name
                             )
                         } else {
                             format!(
@@ -242,21 +276,6 @@ fn evaluate_assertion_lock(diff: &SemanticDiff, policy: &Policy, findings: &mut 
                             },
                             RuleTier::Report,
                             msg,
-                        )
-                    } else {
-                        (
-                            Verdict::Block {
-                                rule: RuleId::AssertionLock,
-                                evidence: format!(
-                                    "Assertion modified/swapped with zero production code changes: '{}'",
-                                    base_assert.text
-                                ),
-                            },
-                            RuleTier::Guard,
-                            format!(
-                                "Assertion modified in test '{}' while production code was untouched.",
-                                test_name
-                            ),
                         )
                     };
 
@@ -332,10 +351,15 @@ fn evaluate_assertion_lock(diff: &SemanticDiff, policy: &Policy, findings: &mut 
     // 1c. Whole test deletions (Guard tier: always BLOCK)
     for del_test in &diff.deleted_tests {
         let test_name = del_test.id.canonical_name();
-        let justified = del_test
+        // Justified only if every production-referencing assertion is orphaned.
+        // A test with no production references is never auto-justified.
+        let prod_asserts: Vec<_> = del_test
             .assertions
             .iter()
-            .any(|a| diff.is_reference_orphaned(&a.referenced_symbols));
+            .filter(|a| a.referenced_symbols.iter().any(|s| diff.all_base_symbols.contains(s)))
+            .collect();
+        let justified = !prod_asserts.is_empty()
+            && prod_asserts.iter().all(|a| diff.is_reference_orphaned(&a.referenced_symbols));
 
         if !justified {
             let id = Finding::compute_id(RuleId::AssertionLock, &test_name, "test_deleted");
@@ -361,6 +385,29 @@ fn evaluate_assertion_lock(diff: &SemanticDiff, policy: &Policy, findings: &mut 
             });
         }
     }
+}
+
+/// Rewrites identifier tokens using the old -> new rename map.
+fn apply_renames(text: &str, renames: &std::collections::HashMap<String, String>) -> String {
+    if renames.is_empty() {
+        return text.to_string();
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut word = String::new();
+    let flush = |word: &mut String, out: &mut String| {
+        out.push_str(renames.get(word.as_str()).unwrap_or(word));
+        word.clear();
+    };
+    for c in text.chars() {
+        if c.is_alphanumeric() || c == '_' {
+            word.push(c);
+        } else {
+            flush(&mut word, &mut out);
+            out.push(c);
+        }
+    }
+    flush(&mut word, &mut out);
+    out
 }
 
 /// Helper to test if a mock target is an in-repo symbol or file
@@ -696,6 +743,194 @@ fn evaluate_runner_config(diff: &SemanticDiff, findings: &mut Vec<Finding>) {
                         flag
                     ),
                     evidence: (*flag).to_string(),
+                });
+            }
+        }
+    }
+}
+
+/// Lines present in head but not base (trimmed), with 1-based head line numbers.
+fn added_lines<'a>(base: &str, head: &'a str) -> Vec<(usize, &'a str)> {
+    let base_lines: HashSet<&str> = base.lines().map(str::trim).collect();
+    head.lines()
+        .enumerate()
+        .map(|(i, l)| (i + 1, l.trim()))
+        .filter(|(_, l)| !l.is_empty() && !base_lines.contains(l))
+        .collect()
+}
+
+/// Splits `key = value` / `"key": value` into a normalized key and the raw value.
+fn config_key_value(line: &str) -> Option<(String, &str)> {
+    let idx = line.find(['=', ':'])?;
+    let key = line[..idx].trim().trim_matches(|c| c == '"' || c == '\'').to_lowercase();
+    if key.is_empty() || key.contains(' ') {
+        return None;
+    }
+    Some((key, line[idx + 1..].trim().trim_end_matches(',')))
+}
+
+fn first_number_for_keys(content: &str, keys: &[&str]) -> Option<f64> {
+    content.lines().find_map(|l| {
+        let (k, v) = config_key_value(l.trim())?;
+        keys.contains(&k.as_str()).then(|| v.trim_matches('"').parse().ok()).flatten()
+    })
+}
+
+fn push_guard(findings: &mut Vec<Finding>, rule: RuleId, path: &str, line: Option<usize>, key: &str, message: String, evidence: &str) {
+    findings.push(Finding {
+        id: Finding::compute_id(rule, path, key),
+        rule_id: rule,
+        tier: RuleTier::Guard,
+        verdict: Verdict::Block { rule, evidence: message.clone() },
+        file_path: path.to_string(),
+        line_number: line,
+        test_name: None,
+        message,
+        evidence: evidence.to_string(),
+    });
+}
+
+/// PROCTOR-004 extension: strictness switched off, lint ignores added, coverage floor lowered.
+fn evaluate_config_loosening(diff: &SemanticDiff, findings: &mut Vec<Finding>) {
+    const PY_CONFIGS: [&str; 8] = [
+        "pyproject.toml", "ruff.toml", ".ruff.toml", "setup.cfg", ".flake8", "tox.ini", "mypy.ini", ".coveragerc",
+    ];
+    const LINT_IGNORE_KEYS: [&str; 7] = [
+        "ignore", "extend-ignore", "extend_ignore", "per-file-ignores", "per_file_ignores",
+        "extend-per-file-ignores", "disable_error_code",
+    ];
+
+    for (path, head) in &diff.raw_head_files {
+        let file = Path::new(path).file_name().and_then(|f| f.to_str()).unwrap_or("");
+        let base = diff.raw_base_files.get(path).map(String::as_str).unwrap_or("");
+        let is_tsconfig = file.starts_with("tsconfig") && file.ends_with(".json");
+        let is_eslint = file.starts_with(".eslintrc") || file.starts_with("eslint.config");
+        let is_py_config = PY_CONFIGS.contains(&file);
+        if !(is_tsconfig || is_eslint || is_py_config) {
+            continue;
+        }
+
+        // Coverage floor lowered (fail_under / --cov-fail-under)
+        if is_py_config {
+            let keys = ["fail_under", "fail-under"];
+            if let (Some(b), Some(h)) = (first_number_for_keys(base, &keys), first_number_for_keys(head, &keys)) {
+                if h < b {
+                    push_guard(findings, RuleId::RunnerConfigTamper, path, None, "fail_under",
+                        format!("Coverage floor lowered from {} to {} in '{}'.", b, h, path),
+                        &format!("fail_under {} -> {}", b, h));
+                }
+            }
+        }
+
+        // Track the most recent `key =` so list continuation lines inherit it.
+        let added: HashSet<usize> = added_lines(base, head).into_iter().map(|(n, _)| n).collect();
+        let mut current_key = String::new();
+        let mut section_key = String::new();
+        for (idx, raw) in head.lines().enumerate() {
+            let line = raw.trim();
+            if line.starts_with('[') && line.ends_with(']') {
+                current_key.clear();
+                section_key = line.trim_matches(['[', ']']).rsplit('.').next().unwrap_or("").to_lowercase();
+                continue;
+            }
+            let kv = config_key_value(line);
+            if let Some((k, _)) = &kv {
+                current_key = k.clone();
+            }
+            if !added.contains(&(idx + 1)) {
+                continue;
+            }
+            let value = kv.as_ref().map(|(_, v)| v.trim_matches(|c| c == '"' || c == '\'').to_lowercase());
+            let key = kv.as_ref().map(|(k, _)| k.as_str()).unwrap_or("");
+
+            let strictness_off = value.as_deref() == Some("false")
+                && (key.starts_with("strict") || key.starts_with("noimplicit") || key.starts_with("nounchecked")
+                    || key == "disallow_untyped_defs" || key == "warn_unused_ignores");
+            let mypy_ignore = key == "ignore_errors" && value.as_deref() == Some("true");
+            let eslint_off = is_eslint && matches!(value.as_deref(), Some("off") | Some("0"));
+
+            if strictness_off || mypy_ignore || eslint_off {
+                push_guard(findings, RuleId::RunnerConfigTamper, path, Some(idx + 1), line,
+                    format!("Checker strictness loosened in '{}': '{}'", path, line), line);
+            } else if is_py_config
+                && (LINT_IGNORE_KEYS.contains(&current_key.as_str()) || LINT_IGNORE_KEYS.contains(&section_key.as_str()))
+            {
+                // Adding an ignore code is common in human PRs: report, don't block.
+                let id = Finding::compute_id(RuleId::RunnerConfigTamper, path, line);
+                findings.push(Finding {
+                    id: id.clone(),
+                    rule_id: RuleId::RunnerConfigTamper,
+                    tier: RuleTier::Report,
+                    verdict: Verdict::Review {
+                        finding_id: id,
+                        evidence: format!("Lint ignore added in '{}': '{}'", path, line),
+                    },
+                    file_path: path.clone(),
+                    line_number: Some(idx + 1),
+                    test_name: None,
+                    message: format!("Lint/type-check ignore list extended in '{}' ({}).", path, current_key),
+                    evidence: line.to_string(),
+                });
+            }
+        }
+    }
+}
+
+/// Returns a label if the line is a file-level / untargeted checker suppression.
+fn blanket_suppression(path: &str, line: &str) -> Option<&'static str> {
+    let ext = Path::new(path).extension().and_then(|e| e.to_str()).unwrap_or("");
+    match ext {
+        "py" => {
+            let comment = &line[line.find('#')?..];
+            let c = comment.trim_start_matches('#').trim().to_lowercase();
+            if c == "ruff: noqa" || c == "flake8: noqa" {
+                Some("file-level noqa")
+            } else if c.starts_with("mypy: ignore-errors") {
+                Some("mypy: ignore-errors")
+            } else if c == "type: ignore" && line.starts_with('#') {
+                Some("module-level type: ignore")
+            } else if c == "noqa" {
+                Some("bare noqa")
+            } else if c.starts_with("pylint: disable=all") {
+                Some("pylint: disable=all")
+            } else {
+                None
+            }
+        }
+        "js" | "jsx" | "ts" | "tsx" | "mjs" | "cjs" => {
+            if line.contains("@ts-nocheck") {
+                return Some("@ts-nocheck");
+            }
+            let rest = line.split("eslint-disable").nth(1)?;
+            let rules = rest.trim().trim_end_matches("*/").trim();
+            // eslint-disable-line / -next-line are line-scoped; only untargeted file-level disables count.
+            (!rest.starts_with('-') && rules.is_empty()).then_some("blanket eslint-disable")
+        }
+        "rs" => line.starts_with("#![allow(").then_some("crate-level #![allow]"),
+        _ => None,
+    }
+}
+
+/// PROCTOR-008: Blanket suppressions added to source or test files.
+fn evaluate_blanket_suppressions(diff: &SemanticDiff, findings: &mut Vec<Finding>) {
+    for (path, head) in &diff.raw_head_files {
+        let base = diff.raw_base_files.get(path).map(String::as_str).unwrap_or("");
+        for (line_no, line) in added_lines(base, head) {
+            if let Some(kind) = blanket_suppression(path, line) {
+                let id = Finding::compute_id(RuleId::BlanketSuppression, path, line);
+                findings.push(Finding {
+                    id: id.clone(),
+                    rule_id: RuleId::BlanketSuppression,
+                    tier: RuleTier::Report,
+                    verdict: Verdict::Review {
+                        finding_id: id,
+                        evidence: format!("{} added at {}:{}", kind, path, line_no),
+                    },
+                    file_path: path.clone(),
+                    line_number: Some(line_no),
+                    test_name: None,
+                    message: format!("Blanket checker suppression ({}) added in '{}'.", kind, path),
+                    evidence: line.to_string(),
                 });
             }
         }

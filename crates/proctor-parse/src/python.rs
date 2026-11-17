@@ -45,12 +45,14 @@ pub fn parse_python_source_file(file_path: &str, source: &str) -> Result<ParsedS
     let has_syntax_error = root.has_error();
     let mut defined_symbols = Vec::new();
     let mut string_literals = Vec::new();
+    let mut symbol_bodies = std::collections::HashMap::new();
 
-    extract_source_symbols(root, source, &mut defined_symbols, &mut string_literals);
+    extract_source_symbols(root, source, &mut defined_symbols, &mut symbol_bodies, &mut string_literals);
 
     Ok(ParsedSourceFile {
         file_path: file_path.to_string(),
         defined_symbols,
+        symbol_bodies,
         string_literals,
         has_syntax_error,
     })
@@ -170,12 +172,16 @@ fn extract_python_test(
         extract_assertions_and_mocks(body, source, &mut assertions, &mut mocks);
     }
 
+    let mut body_symbols = Vec::new();
+    extract_identifiers_and_attrs(fn_node, source, &mut body_symbols);
+
     ParsedTest {
         id: test_id,
         assertions,
         mocks,
         parametrized_hashes: Vec::new(),
         is_skipped,
+        body_symbols,
     }
 }
 
@@ -452,6 +458,7 @@ fn extract_source_symbols(
     node: Node,
     source: &str,
     defined_symbols: &mut Vec<String>,
+    symbol_bodies: &mut std::collections::HashMap<String, String>,
     string_literals: &mut Vec<String>,
 ) {
     let cursor = &mut node.walk();
@@ -462,6 +469,8 @@ fn extract_source_symbols(
                     let name = name_node.utf8_text(source.as_bytes()).unwrap_or("");
                     if !name.is_empty() {
                         defined_symbols.push(name.to_string());
+                        let body = child.child_by_field_name("body").and_then(|b| b.utf8_text(source.as_bytes()).ok()).unwrap_or("");
+                        crate::record_body(symbol_bodies, name, body);
                     }
                 }
             }
@@ -470,6 +479,8 @@ fn extract_source_symbols(
                     let name = left.utf8_text(source.as_bytes()).unwrap_or("");
                     if !name.is_empty() {
                         defined_symbols.push(name.to_string());
+                        let body = child.child_by_field_name("right").and_then(|b| b.utf8_text(source.as_bytes()).ok()).unwrap_or("");
+                        crate::record_body(symbol_bodies, name, body);
                     }
                 }
             }
@@ -482,7 +493,7 @@ fn extract_source_symbols(
             }
             _ => {}
         }
-        extract_source_symbols(child, source, defined_symbols, string_literals);
+        extract_source_symbols(child, source, defined_symbols, symbol_bodies, string_literals);
     }
 }
 

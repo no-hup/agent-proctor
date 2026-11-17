@@ -36,19 +36,19 @@
 *Goal: Close the implementation loopholes discovered by Grok in `crates/proctor-rules` to eliminate false negatives and silent laundering.*
 
 ### Tasks:
-- [ ] **Task 1.1: Fix Assertion-Definition Linkage**
+- [x] **Task 1.1: Fix Assertion-Definition Linkage**
   - *Location:* `crates/proctor-rules/src/lib.rs` (`evaluate_assertion_lock`)
   - *Problem:* Currently, if an assertion is deleted and the PR touches *any* production file anywhere in the diff, the finding is demoted from `Guard` (block) to `Report` (review). An agent that touches production code and weakens a test escapes blocking.
   - *Fix:* Link each assertion to the production files that actually define the symbols it references. Block when those referenced definitions are unchanged. Demote to `Report` only when a referenced definition changed in the same PR. Unknown linkage routes to `Report`, never silent clean.
-- [ ] **Task 1.2: Enforce `.all()` Production Reference Orphan Justification**
+- [x] **Task 1.2: Enforce `.all()` Production Reference Orphan Justification**
   - *Location:* `crates/proctor-rules/src/lib.rs` (`is_reference_orphaned`)
   - *Problem:* Currently, whole-test deletion is marked clean if *any* single assertion's referenced symbols were deleted (`justified = del_test.assertions.iter().any(...)`), laundering other weakened assertions in the same test.
   - *Fix:* Require every production-referencing assertion in the test to be orphaned. A test with zero production references is never automatically justified.
-- [ ] **Task 1.3: Intra-Module Symbol Rename Detection**
+- [x] **Task 1.3: Intra-Module Symbol Rename Detection**
   - *Location:* `crates/proctor-diff/src/lib.rs` & `crates/proctor-rules/src/lib.rs`
   - *Problem:* Renaming `legacy_fn` $\to$ `fn` counts as a deleted symbol, silently laundering assertion weakenings.
   - *Fix:* Match deleted symbols to newly added symbols in the same module by AST body similarity. If a body match exists ($\ge 75\%$), treat as a rename: the symbol is not orphaned, and assertion weakenings remain flagged.
-- [ ] **Task 1.4: Corpus Fixtures & Regression Tests**
+- [x] **Task 1.4: Corpus Fixtures & Regression Tests**
   - Create attack fixtures and clean twins for all 3 edge cases under `corpus/attack/` and `corpus/clean/`. Verify via `cargo test`.
 
 ---
@@ -58,19 +58,19 @@
 *Goal: Catch the most common real-world agent bypass: disabling the gate or compiler instead of fixing the failing code.*
 
 ### Tasks:
-- [ ] **Task 2.1: Config Loosening Rules (`PROCTOR-004` Extension)**
+- [x] **Task 2.1: Config Loosening Rules (`PROCTOR-004` Extension)**
   - Parse diffs in configuration files:
     - `tsconfig.json`: flag strictness flags flipped from `true` to `false` (`strict`, `noImplicitAny`, `strictNullChecks`).
     - `pyproject.toml` / `ruff.toml` / `.flake8`: flag additions to `extend-ignore`, `ignore`, or `suppress-none`.
     - `.eslintrc` / `eslint.config.js`: flag rules dropped from `"error"` to `"off"` or `"warn"`.
   - Severity: **`Guard` Tier (Exit 2 / Hard Block)**. Tightening configs is marked clean.
-- [ ] **Task 2.2: Blanket Suppression Rules**
+- [x] **Task 2.2: Blanket Suppression Rules**
   - Detect added file-level checker suppressions in diffs:
     - TypeScript/JavaScript: `// @ts-nocheck`, `/* eslint-disable */` (without specific rule names).
     - Python: `# ruff: noqa`, `# mypy: ignore-errors`, blanket `# type: ignore` at module level.
     - Rust: `#![allow(...)]` crate-level attributes.
   - Severity: **`Report` Tier (Review Required)**. Targeted, line-level suppressions (`# noqa: E501`, `@ts-expect-error`) remain clean.
-- [ ] **Task 2.3: Config & Suppression Test Corpus**
+- [x] **Task 2.3: Config & Suppression Test Corpus**
   - Add test fixtures covering config tightening (clean), config loosening (block), targeted suppression (clean), and blanket suppression (review).
 
 ---
@@ -80,7 +80,7 @@
 *Goal: Transform Proctor from a negative "cheat alarm" into an indispensable daily review accelerator that posts on every PR touching tests or configs.*
 
 ### Tasks:
-- [ ] **Task 3.1: Structured Markdown Receipt Generator in `proctor-cli`**
+- [x] **Task 3.1: Structured Markdown Receipt Generator in `proctor-cli`**
   - Add `proctor receipt --format markdown` that outputs a standardized, positive Test-Change Receipt:
     ```markdown
     ### 📋 Test-Change Receipt (agent-proctor)

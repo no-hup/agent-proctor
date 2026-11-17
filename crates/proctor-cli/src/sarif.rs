@@ -10,6 +10,8 @@ pub fn generate_sarif(findings: &[Finding]) -> serde_json::Value {
         RuleId::RunnerConfigTamper,
         RuleId::SnapshotIntegrity,
         RuleId::ParametrizeRowDrop,
+        RuleId::PolicyTamper,
+        RuleId::BlanketSuppression,
     ];
 
     let sarif_rules: Vec<serde_json::Value> = rules

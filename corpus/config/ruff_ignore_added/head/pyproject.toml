@@ -1,0 +1,9 @@
+[tool.ruff.lint]
+select = ["E", "F"]
+extend-ignore = [
+    "E501",
+    "F401",
+]
+
+[tool.coverage.report]
+fail_under = 90

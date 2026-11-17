@@ -1,4 +1,4 @@
-use proctor_parse::{parse_javascript_source_file, parse_javascript_test_file, parse_python_source_file, parse_python_test_file, ParsedTest, ParsedTestFile, ParsedSourceFile};
+use proctor_parse::{parse_javascript_source_file, parse_javascript_test_file, parse_python_source_file, parse_python_test_file, ParsedSourceFile, ParsedTest, ParsedTestFile};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
@@ -19,6 +19,10 @@ pub struct SemanticDiff {
     pub head_sources: HashMap<String, ParsedSourceFile>,
     pub all_base_symbols: HashSet<String>,
     pub all_deleted_symbols: HashSet<String>,
+    /// Bare names whose definition was added, removed, or edited in this PR (pure renames excluded).
+    pub changed_symbols: HashSet<String>,
+    /// Intra-file renames detected by body similarity: old name -> new name.
+    pub renamed_symbols: HashMap<String, String>,
     pub raw_base_files: HashMap<String, String>,
     pub raw_head_files: HashMap<String, String>,
     pub base_harness_mocks: Vec<proctor_parse::ParsedMock>,
@@ -119,8 +123,16 @@ impl SemanticDiff {
             }
         }
 
+        let (changed_symbols, renamed_symbols) = compute_symbol_changes(&base_sources, &head_sources);
+
+        // A name only counts as deleted if its bare name is gone everywhere and it was not renamed.
+        // (Moving `foo` to another file deletes `old.mod.foo` but `foo` still exists.)
         let all_deleted_symbols: HashSet<String> = base_symbols
             .difference(&head_symbols)
+            .filter(|sym| {
+                let bare = sym.rsplit('.').next().unwrap_or(sym);
+                !head_symbols.contains(bare) && !renamed_symbols.contains_key(bare)
+            })
             .cloned()
             .collect();
 
@@ -207,6 +219,8 @@ impl SemanticDiff {
             head_sources,
             all_base_symbols: base_symbols,
             all_deleted_symbols,
+            changed_symbols,
+            renamed_symbols,
             raw_base_files: base_files.clone(),
             raw_head_files: head_files.clone(),
             base_harness_mocks,
@@ -239,7 +253,7 @@ impl SemanticDiff {
             return false;
         }
 
-        // Strict: ALL referenced production symbols must be deleted
+        // Strict: ALL referenced production symbols must be deleted (renames never count)
         prod_refs.iter().all(|sym| {
             self.all_deleted_symbols.contains(*sym)
                 || self
@@ -248,6 +262,83 @@ impl SemanticDiff {
                     .any(|d| d.ends_with(&format!(".{}", sym)))
         })
     }
+
+    /// True if the test (before or after the PR) references a production definition changed in this PR.
+    pub fn test_links_changed_code(&self, base: &ParsedTest, head: &ParsedTest) -> bool {
+        base.body_symbols
+            .iter()
+            .chain(head.body_symbols.iter())
+            .any(|sym| self.changed_symbols.contains(sym))
+    }
+}
+
+const RENAME_SIMILARITY: f32 = 0.75;
+
+fn body_tokens(body: &str, own_name: &str) -> HashSet<String> {
+    body.split(|c: char| !(c.is_alphanumeric() || c == '_'))
+        .filter(|t| !t.is_empty())
+        .map(|t| if t == own_name { "$self".to_string() } else { t.to_string() })
+        .collect()
+}
+
+fn jaccard(a: &HashSet<String>, b: &HashSet<String>) -> f32 {
+    let union = a.union(b).count();
+    if union == 0 {
+        return 1.0;
+    }
+    a.intersection(b).count() as f32 / union as f32
+}
+
+/// Per changed file: which definitions changed, and which deletions are really renames.
+fn compute_symbol_changes(
+    base_sources: &HashMap<String, ParsedSourceFile>,
+    head_sources: &HashMap<String, ParsedSourceFile>,
+) -> (HashSet<String>, HashMap<String, String>) {
+    let empty = HashMap::new();
+    let mut changed = HashSet::new();
+    let mut renamed = HashMap::new();
+
+    let paths: HashSet<&String> = base_sources.keys().chain(head_sources.keys()).collect();
+    for path in paths {
+        let base = base_sources.get(path).map(|s| &s.symbol_bodies).unwrap_or(&empty);
+        let head = head_sources.get(path).map(|s| &s.symbol_bodies).unwrap_or(&empty);
+
+        for (name, body) in base {
+            if head.get(name).is_some_and(|h| h != body) {
+                changed.insert(name.clone());
+            }
+        }
+
+        let mut added: Vec<&String> = head.keys().filter(|n| !base.contains_key(*n)).collect();
+        added.sort();
+        let mut deleted: Vec<&String> = base.keys().filter(|n| !head.contains_key(*n)).collect();
+        deleted.sort();
+
+        for old in deleted {
+            let old_tokens = body_tokens(&base[old], old);
+            let best = added
+                .iter()
+                .enumerate()
+                .map(|(i, new)| (i, jaccard(&old_tokens, &body_tokens(&head[*new], new))))
+                .filter(|(_, sim)| *sim >= RENAME_SIMILARITY)
+                .max_by(|a, b| a.1.total_cmp(&b.1));
+            match best {
+                Some((i, sim)) => {
+                    let new = added.remove(i);
+                    if sim < 1.0 {
+                        changed.insert(old.clone());
+                        changed.insert(new.clone());
+                    }
+                    renamed.insert(old.clone(), new.clone());
+                }
+                None => {
+                    changed.insert(old.clone());
+                }
+            }
+        }
+        changed.extend(added.into_iter().cloned());
+    }
+    (changed, renamed)
 }
 
 fn compute_assertion_overlap(
@@ -378,6 +469,27 @@ class User:
         // If it references a symbol that was NOT deleted (User), strict orphan checks require all to be deleted
         let non_orphaned = vec!["User".to_string(), "legacy_token".to_string()];
         assert_eq!(diff.is_reference_orphaned(&non_orphaned), false);
+    }
+
+    #[test]
+    fn test_rename_is_not_deletion_and_move_is_not_deletion() {
+        let base_src = "def legacy_total(items):\n    s = 0\n    for i in items:\n        s += i.price * i.qty\n    return s\n\ndef helper():\n    return 1\n";
+        let head_src = "def total(items):\n    s = 0\n    for i in items:\n        s += i.price * i.qty\n    return s\n";
+        let other_head = "def helper():\n    return 1\n";
+
+        let base_files = HashMap::from([("app/cart.py".to_string(), base_src.to_string())]);
+        let head_files = HashMap::from([
+            ("app/cart.py".to_string(), head_src.to_string()),
+            ("app/util.py".to_string(), other_head.to_string()),
+        ]);
+        let diff = SemanticDiff::build(&base_files, &head_files).unwrap();
+
+        assert_eq!(diff.renamed_symbols.get("legacy_total").map(String::as_str), Some("total"));
+        assert!(!diff.is_reference_orphaned(&["legacy_total".to_string()]));
+        // Pure rename is not a behavior change.
+        assert!(!diff.changed_symbols.contains("total"));
+        // Moved to another file: not deleted.
+        assert!(!diff.is_reference_orphaned(&["helper".to_string()]));
     }
 
     #[test]
