@@ -1,6 +1,7 @@
 /target/
 /target-*/
 /dist-bin/
+/scratch/
 **/*.rs.bk
 .DS_Store
 __pycache__/
