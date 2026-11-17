@@ -7,11 +7,11 @@
 
 ## 1. Where We Started (Origin & Motivation)
 
-### The Precursor: APKwarden & The Outreach Epiphany
-The project originated from lessons learned during the APKwarden developer outreach campaign (83 open-source maintainers contacted, 1 production CI installation by Daniel, and pushback from community purists):
-1. **The Patrizio Lesson (Universal Framing):** Never accuse maintainers or assume bot unreliability (*"Since your AI agents write code..."*). Developers become instantly defensive when told their team or agents wrote bad code. Pitch **universal test integrity and regression prevention** for human contributors and AI assistants alike.
-2. **The Daniel Lesson (Hermetic Trust & Open Source):** Daniel adopted APKwarden in production CI only because he could download an independently verifiable binary, verify its SHA-256 checksum in his runner, and rely on **zero network egress**. Asking developers to run an opaque, closed-source scanner in CI is dead on arrival.
-3. **Observe-Mode First:** Nobody installs an unknown blocking gate that can break their CI builds. Developers demand an "observe mode" that reports findings without breaking merges.
+### Foundational Developer Principles
+`agent-proctor` was founded on three non-negotiable principles derived from real-world open-source maintainer feedback:
+1. **Universal Framing (No Finger-Pointing):** Never accuse maintainers or assume bot unreliability (*"Since your AI agents write bad code..."*). Developers become defensive when told their team or agents wrote bad code. Pitch **universal test integrity and regression prevention** for human contributors and AI assistants alike.
+2. **Hermetic Trust & Open Source:** Security-conscious maintainers will never run an opaque, closed-source scanner in CI. The tool must be 100% open source under Apache-2.0, independently verifiable with SHA-256 checksums, and operate with **strict zero network egress**.
+3. **Observe-Mode First:** Nobody installs an unknown blocking gate that risks breaking CI builds. Teams demand an "observe mode" that reports findings without breaking merges.
 
 ### The Problem Hypothesis
 Autonomous AI coding agents (Claude Code, Cursor, Devin, OpenHands, SWE-agent) optimize for a single objective: **make the test suite green (`exit code 0`)**. When an implementation is difficult or contradictory, the path of least resistance for an LLM is specification gaming:
