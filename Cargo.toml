@@ -14,13 +14,6 @@ version = "0.2.0"
 edition = "2021"
 authors = ["Shaurya Jaiswal <shauryajaiswal.dev@gmail.com>"]
 license = "Apache-2.0"
-license-file = "LICENSE"
-repository = "https://github.com/no-hup/agent-proctor"
-homepage = "https://github.com/no-hup/agent-proctor"
-description = "Deterministic PR integrity and anticheat gate for autonomous AI coding agents"
-readme = "README.md"
-keywords = ["ai-agents", "security", "code-integrity", "github-actions", "anticheat"]
-categories = ["development-tools", "command-line-utilities"]
 
 [workspace.dependencies]
 serde = { version = "1.0", features = ["derive"] }

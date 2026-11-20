@@ -815,6 +815,12 @@ fn eval_instance_with_worktree(
     let wt_path = temp_dir.path();
     let base_ref = base_commit.unwrap_or("HEAD");
 
+    // 1. Prune dead/stale worktrees before creating a new one
+    let _ = Command::new("git")
+        .current_dir(repo_path)
+        .args(["worktree", "prune"])
+        .output();
+
     let wt_add = Command::new("git")
         .current_dir(repo_path)
         .args(["worktree", "add", "--detach", wt_path.to_str().unwrap(), base_ref])
@@ -882,10 +888,14 @@ fn eval_instance_with_worktree(
         Err(e) => Err(anyhow::anyhow!("Failed to run git apply: {}", e)),
     };
 
-    // Remove temporary worktree
+    // Remove temporary worktree and prune registration
     let _ = Command::new("git")
         .current_dir(repo_path)
         .args(["worktree", "remove", "--force", wt_path.to_str().unwrap()])
+        .output();
+    let _ = Command::new("git")
+        .current_dir(repo_path)
+        .args(["worktree", "prune"])
         .output();
 
     result

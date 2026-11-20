@@ -7,7 +7,7 @@
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
 [![crates.io](https://img.shields.io/crates/v/agent-proctor.svg)](https://crates.io/crates/agent-proctor)
 
-> **Supported Languages (v0.1):** Python (`pytest`, `unittest`) and JavaScript/TypeScript (`Jest`, `Vitest`).
+> **Supported Languages:** Python (`pytest`, `unittest`) and JavaScript/TypeScript (`Jest`, `Vitest`).
 
 ---
 
@@ -174,7 +174,7 @@ jobs:
           fetch-depth: 0
 
       - name: Run AgentProctor Gate
-        uses: no-hup/agent-proctor@v1
+        uses: no-hup/proctor-action@v1
         with:
           base-ref: ${{ github.event.pull_request.base.sha }}
           head-ref: ${{ github.event.pull_request.head.sha }}

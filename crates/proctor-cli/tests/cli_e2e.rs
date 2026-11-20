@@ -281,3 +281,100 @@ fn test_cli_eval_swebench() {
     assert_eq!(v2["instance_id"], "instance-cheat-2");
     assert_eq!(v2["verdict"], "block");
 }
+
+#[test]
+fn test_cli_version_and_audit_smoke() {
+    let proctor_bin = env!("CARGO_BIN_EXE_proctor");
+
+    // Test `proctor version`
+    let out_version = Command::new(proctor_bin)
+        .arg("version")
+        .output()
+        .unwrap();
+    assert!(out_version.status.success());
+    let stdout_version = String::from_utf8_lossy(&out_version.stdout);
+    assert!(stdout_version.contains("v0.2.0"));
+    assert!(stdout_version.contains("Tree-sitter"));
+
+    // Test `proctor --version`
+    let out_flag = Command::new(proctor_bin)
+        .arg("--version")
+        .output()
+        .unwrap();
+    assert!(out_flag.status.success());
+    let stdout_flag = String::from_utf8_lossy(&out_flag.stdout);
+    assert!(stdout_flag.contains("0.2.0"));
+
+    // Test `proctor audit --limit 1`
+    let temp_dir = tempfile::tempdir().unwrap();
+    let repo_path = temp_dir.path();
+    setup_repo(repo_path);
+
+    fs::write(repo_path.join("file.txt"), "hello").unwrap();
+    let run = |args: &[&str]| {
+        Command::new("git")
+            .current_dir(repo_path)
+            .args(args)
+            .output()
+            .unwrap();
+    };
+    run(&["add", "."]);
+    run(&["commit", "-m", "Initial commit for audit test"]);
+
+    let out_audit = Command::new(proctor_bin)
+        .current_dir(repo_path)
+        .args(&["audit", "--limit", "1"])
+        .output()
+        .unwrap();
+    assert!(out_audit.status.success());
+    let stdout_audit = String::from_utf8_lossy(&out_audit.stdout);
+    assert!(stdout_audit.contains("Commits Audited : 1") || stdout_audit.contains("Historical Repository Integrity Scan"));
+}
+
+#[test]
+fn test_cli_receipt_and_sarif_file_emission() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let repo_path = temp_dir.path();
+    setup_repo(repo_path);
+
+    fs::create_dir_all(repo_path.join("tests")).unwrap();
+    fs::write(repo_path.join("tests/test_demo.py"), "def test_ok():\n    assert 1 == 1\n").unwrap();
+
+    let run = |args: &[&str]| {
+        Command::new("git")
+            .current_dir(repo_path)
+            .args(args)
+            .output()
+            .unwrap();
+    };
+    run(&["add", "."]);
+    run(&["commit", "-m", "Base commit"]);
+
+    // Modify test file
+    fs::write(repo_path.join("tests/test_demo.py"), "def test_ok():\n    assert 1 == 1\n    assert 2 == 2\n").unwrap();
+
+    let receipt_path = repo_path.join("receipt.md");
+    let sarif_path = repo_path.join("results.sarif");
+
+    let proctor_bin = env!("CARGO_BIN_EXE_proctor");
+    let out = Command::new(proctor_bin)
+        .current_dir(repo_path)
+        .args(&[
+            "scan",
+            "--base", "HEAD",
+            "--receipt", receipt_path.to_str().unwrap(),
+            "--sarif", sarif_path.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+
+    assert!(out.status.success());
+    assert!(receipt_path.exists(), "receipt.md should be written to disk");
+    let receipt_content = fs::read_to_string(&receipt_path).unwrap();
+    assert!(receipt_content.contains("Test-Change Receipt"), "receipt must contain header: {}", receipt_content);
+
+    assert!(sarif_path.exists(), "results.sarif should be written to disk");
+    let sarif_content = fs::read_to_string(&sarif_path).unwrap();
+    let sarif_json: serde_json::Value = serde_json::from_str(&sarif_content).expect("Valid JSON SARIF");
+    assert_eq!(sarif_json["version"], "2.1.0");
+}
