@@ -41,6 +41,10 @@ struct Cli {
     #[arg(long)]
     experimental_probe: bool,
 
+    /// Dynamically execute changed tests against base code to verify bug reproduction
+    #[arg(long)]
+    verify: bool,
+
     /// Append the markdown Test-Change Receipt to this file (e.g. $GITHUB_STEP_SUMMARY)
     #[arg(long)]
     receipt: Option<PathBuf>,
@@ -68,7 +72,29 @@ enum Commands {
         #[arg(long)]
         experimental_probe: bool,
 
+        /// Dynamically execute changed tests against base code to verify bug reproduction
+        #[arg(long)]
+        verify: bool,
+
         /// Append the markdown Test-Change Receipt to this file (e.g. $GITHUB_STEP_SUMMARY)
+        #[arg(long)]
+        receipt: Option<PathBuf>,
+    },
+    /// Dynamically verify that added/modified tests catch regressions by executing them on the base code
+    Verify {
+        #[arg(short, long, default_value = "main")]
+        base: String,
+
+        #[arg(long)]
+        head: Option<String>,
+
+        #[arg(long, value_enum, default_value_t = CliRunnerType::Auto)]
+        runner: CliRunnerType,
+
+        #[arg(short, long, value_enum, default_value_t = OutputFormat::Pretty)]
+        format: OutputFormat,
+
+        /// Append the verification receipt to this file (e.g. $GITHUB_STEP_SUMMARY)
         #[arg(long)]
         receipt: Option<PathBuf>,
     },
@@ -119,6 +145,25 @@ enum Commands {
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum, Debug)]
+pub enum CliRunnerType {
+    Auto,
+    Pytest,
+    Jest,
+    Vitest,
+}
+
+impl From<CliRunnerType> for proctor_probe::RunnerType {
+    fn from(c: CliRunnerType) -> Self {
+        match c {
+            CliRunnerType::Auto => proctor_probe::RunnerType::Auto,
+            CliRunnerType::Pytest => proctor_probe::RunnerType::Pytest,
+            CliRunnerType::Jest => proctor_probe::RunnerType::Jest,
+            CliRunnerType::Vitest => proctor_probe::RunnerType::Vitest,
+        }
+    }
+}
+
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum, Debug)]
 enum OutputFormat {
     Pretty,
     Json,
@@ -131,7 +176,10 @@ fn main() -> Result<()> {
 
     match cli.command {
         Some(Commands::Version) => {
-            println!("agent-proctor v{} (deterministic AST verification)", env!("CARGO_PKG_VERSION"));
+            println!(
+                "agent-proctor v{} (deterministic AST verification)",
+                env!("CARGO_PKG_VERSION")
+            );
             println!("Supported languages: Python (pytest/unittest), JavaScript/TypeScript (Jest/Vitest)");
             println!("Engine: Tree-sitter 0.22, Blake3 cryptographic fingerprints");
             Ok(())
@@ -143,6 +191,7 @@ fn main() -> Result<()> {
             sarif,
             strict,
             experimental_probe,
+            verify,
             receipt,
         }) => run_scan(
             &base,
@@ -151,8 +200,16 @@ fn main() -> Result<()> {
             sarif,
             strict,
             experimental_probe,
+            verify,
             receipt,
         ),
+        Some(Commands::Verify {
+            base,
+            head,
+            runner,
+            format,
+            receipt,
+        }) => run_verify(&base, head.as_deref(), runner, format, receipt.as_deref()),
         Some(Commands::Probe {
             base,
             head,
@@ -178,11 +235,13 @@ fn main() -> Result<()> {
             cli.sarif,
             cli.strict,
             cli.experimental_probe,
+            cli.verify,
             cli.receipt,
         ),
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_scan(
     base: &str,
     head: Option<&str>,
@@ -190,6 +249,7 @@ fn run_scan(
     sarif_path: Option<PathBuf>,
     strict: bool,
     experimental_probe: bool,
+    verify: bool,
     receipt_path: Option<PathBuf>,
 ) -> Result<()> {
     // 1. Immutably anchor policy to the base ref
@@ -247,7 +307,9 @@ fn run_scan(
     if std::env::var("GITHUB_ACTIONS").is_ok() {
         if let Ok(env_waivers) = std::env::var("PROCTOR_VERIFIED_WAIVERS") {
             if let Ok(parsed_set) = serde_json::from_str::<proctor_core::WaiverSet>(&env_waivers) {
-                waiver_set.maintainer_waivers.extend(parsed_set.maintainer_waivers);
+                waiver_set
+                    .maintainer_waivers
+                    .extend(parsed_set.maintainer_waivers);
                 waiver_set.author_acks.extend(parsed_set.author_acks);
             } else {
                 for w in env_waivers.split(',') {
@@ -276,6 +338,41 @@ fn run_scan(
         }
     }
 
+    // 5c. Optional dynamic verification
+    if verify {
+        println!("proctor: Running dynamic regression verification in ephemeral worktree...");
+        let mut test_files_set = std::collections::BTreeSet::new();
+        for t in &diff.new_tests {
+            test_files_set.insert(t.id.file_path.clone());
+        }
+        for p in &diff.paired_tests {
+            test_files_set.insert(p.head_test.id.file_path.clone());
+        }
+        let changed_test_files: Vec<String> = test_files_set.into_iter().collect();
+        if let Ok(verify_results) = proctor_probe::verify_tests(
+            Path::new("."),
+            base,
+            head,
+            proctor_probe::RunnerType::Auto,
+            &changed_test_files,
+        ) {
+            reporter::print_verification_results(&verify_results);
+            if let Some(path) = &receipt_path {
+                if let Ok(mut file) = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(path)
+                {
+                    let _ = writeln!(
+                        file,
+                        "\n{}",
+                        reporter::render_verification_receipt(&verify_results)
+                    );
+                }
+            }
+        }
+    }
+
     // 6. Generate SARIF if requested
     if let Some(path) = sarif_path {
         let sarif_val = sarif::generate_sarif(&findings);
@@ -285,17 +382,20 @@ fn run_scan(
 
     // 6b. Append the Test-Change Receipt (step summaries are shared files, so append)
     if let Some(path) = receipt_path {
-        let mut file = std::fs::OpenOptions::new().create(true).append(true).open(&path)?;
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)?;
         writeln!(file, "{}", reporter::render_receipt(&diff, &findings))?;
     }
 
     // 7. Compute overall verdict & rule tiering
-    let has_guard_block = findings.iter().any(|f| {
-        f.tier == RuleTier::Guard || matches!(f.verdict, Verdict::Block { .. })
-    });
-    let has_report_review = findings.iter().any(|f| {
-        f.tier == RuleTier::Report || matches!(f.verdict, Verdict::Review { .. })
-    });
+    let has_guard_block = findings
+        .iter()
+        .any(|f| f.tier == RuleTier::Guard || matches!(f.verdict, Verdict::Block { .. }));
+    let has_report_review = findings
+        .iter()
+        .any(|f| f.tier == RuleTier::Report || matches!(f.verdict, Verdict::Review { .. }));
 
     let overall_verdict = if has_guard_block {
         Verdict::Block {
@@ -357,6 +457,90 @@ fn run_scan(
     }
 }
 
+fn run_verify(
+    base: &str,
+    head: Option<&str>,
+    runner: CliRunnerType,
+    format: OutputFormat,
+    receipt_path: Option<&Path>,
+) -> Result<()> {
+    let repo_root = Path::new(".");
+    let changed = match git::get_changed_files(base, head) {
+        Ok(c) => c,
+        Err(e) => {
+            if base == "main" {
+                if let Ok(c) = git::get_changed_files("origin/main", head) {
+                    c
+                } else if let Ok(c) = git::get_changed_files("HEAD~1", head) {
+                    c
+                } else {
+                    eprintln!("proctor: error: unable to diff git refs: {}", e);
+                    std::process::exit(1);
+                }
+            } else {
+                eprintln!("proctor: error: {}", e);
+                std::process::exit(1);
+            }
+        }
+    };
+
+    let diff = SemanticDiff::build(&changed.base_files, &changed.head_files)
+        .map_err(|e| anyhow::anyhow!("Semantic diff failed: {}", e))?;
+
+    let mut test_files_set = std::collections::BTreeSet::new();
+    for t in &diff.new_tests {
+        test_files_set.insert(t.id.file_path.clone());
+    }
+    for p in &diff.paired_tests {
+        test_files_set.insert(p.head_test.id.file_path.clone());
+    }
+
+    let changed_test_files: Vec<String> = test_files_set.into_iter().collect();
+
+    if changed_test_files.is_empty() {
+        if format == OutputFormat::Json {
+            println!("[]");
+        } else {
+            println!(
+                "proctor verify: No changed test files detected between {} and HEAD.",
+                base
+            );
+        }
+        return Ok(());
+    }
+
+    println!(
+        "proctor verify: Running dynamic regression verification on {} test file(s)...",
+        changed_test_files.len()
+    );
+    let results =
+        proctor_probe::verify_tests(repo_root, base, head, runner.into(), &changed_test_files)?;
+
+    match format {
+        OutputFormat::Json => {
+            println!("{}", serde_json::to_string_pretty(&results)?);
+        }
+        OutputFormat::Markdown => {
+            let markdown = reporter::render_verification_receipt(&results);
+            println!("{}", markdown);
+        }
+        OutputFormat::Pretty | OutputFormat::Sarif => {
+            reporter::print_verification_results(&results);
+        }
+    }
+
+    if let Some(receipt_file) = receipt_path {
+        let markdown = reporter::render_verification_receipt(&results);
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(receipt_file)?;
+        writeln!(file, "\n{}", markdown)?;
+    }
+
+    Ok(())
+}
+
 fn run_probe_cmd(
     base: &str,
     head: &str,
@@ -368,7 +552,10 @@ fn run_probe_cmd(
     let diff = SemanticDiff::build(&changed.base_files, &changed.head_files)
         .map_err(|e| anyhow::anyhow!("Semantic diff failed: {}", e))?;
 
-    println!("proctor: Dispatching ephemeral probe sandbox on ref '{}'...", head);
+    println!(
+        "proctor: Dispatching ephemeral probe sandbox on ref '{}'...",
+        head
+    );
     let probe_results = proctor_probe::run_probe(Path::new("."), head, &diff, max_mutants)?;
 
     let mut findings = Vec::new();
@@ -421,9 +608,20 @@ fn run_probe_cmd(
             if !findings.is_empty() {
                 println!("\n#### Surviving Mutants & Weaknesses");
                 for f in &findings {
-                    let ctx = f.test_name.as_deref().unwrap_or(&f.evidence).replace('|', "\\|").replace('\n', " ");
+                    let ctx = f
+                        .test_name
+                        .as_deref()
+                        .unwrap_or(&f.evidence)
+                        .replace('|', "\\|")
+                        .replace('\n', " ");
                     let line_no = f.line_number.unwrap_or(1);
-                    println!("* `{}` at `{}:{}` - {}", f.rule_id.code(), f.file_path, line_no, ctx);
+                    println!(
+                        "* `{}` at `{}:{}` - {}",
+                        f.rule_id.code(),
+                        f.file_path,
+                        line_no,
+                        ctx
+                    );
                 }
             }
         }
@@ -472,7 +670,8 @@ fn run_audit(limit: usize, format: OutputFormat, label_path: Option<PathBuf>) ->
     let mut clean_commits = 0;
     let mut review_commits = 0;
     let mut block_commits = 0;
-    let mut rule_counts: std::collections::HashMap<&'static str, usize> = std::collections::HashMap::new();
+    let mut rule_counts: std::collections::HashMap<&'static str, usize> =
+        std::collections::HashMap::new();
 
     struct AuditAnomaly {
         commit: String,
@@ -572,8 +771,14 @@ fn run_audit(limit: usize, format: OutputFormat, label_path: Option<PathBuf>) ->
                 0.0
             };
             println!("  Clean (PASS)    : {} ({:.1}%)", clean_commits, pass_pct);
-            println!("  Spec Revisions  : {} ({:.1}%) [REVIEW]", review_commits, review_pct);
-            println!("  Violations      : {} ({:.1}%) [BLOCK]", block_commits, block_pct);
+            println!(
+                "  Spec Revisions  : {} ({:.1}%) [REVIEW]",
+                review_commits, review_pct
+            );
+            println!(
+                "  Violations      : {} ({:.1}%) [BLOCK]",
+                block_commits, block_pct
+            );
             println!("{}", "─".repeat(60));
 
             if !rule_counts.is_empty() {
@@ -582,10 +787,7 @@ fn run_audit(limit: usize, format: OutputFormat, label_path: Option<PathBuf>) ->
                     println!("    {:<12} : {}", rule, count);
                 }
             }
-            println!(
-                "\n  Block Rate on Merged History: {:.2}%\n",
-                block_pct
-            );
+            println!("\n  Block Rate on Merged History: {:.2}%\n", block_pct);
             if let Some(p) = label_path {
                 println!("  Label CSV exported to: {}", p.display());
             }
@@ -625,8 +827,14 @@ fn run_audit(limit: usize, format: OutputFormat, label_path: Option<PathBuf>) ->
             println!("**Repository Test Suite Health & Stability Scan**\n");
             println!("* **Commits Audited:** {}", total_audited);
             println!("* **Clean Commits:** {} ({:.1}%)", clean_commits, pass_pct);
-            println!("* **Legitimate Spec Modifications:** {} ({:.1}%)", review_commits, review_pct);
-            println!("* **Test Modifications / Anomalies:** {} ({:.1}%)\n", block_commits, block_pct);
+            println!(
+                "* **Legitimate Spec Modifications:** {} ({:.1}%)",
+                review_commits, review_pct
+            );
+            println!(
+                "* **Test Modifications / Anomalies:** {} ({:.1}%)\n",
+                block_commits, block_pct
+            );
 
             if !rule_counts.is_empty() {
                 println!("#### Rule Breakdown");
@@ -645,10 +853,16 @@ fn run_audit(limit: usize, format: OutputFormat, label_path: Option<PathBuf>) ->
                 for a in anomalies.iter().take(10) {
                     let test_ctx = a.test_name.as_deref().unwrap_or(&a.evidence);
                     let sanitized = test_ctx.replace('|', "\\|").replace('\n', " ");
-                    println!("| `{}` | `{}` | `{}:{}` | {} |", a.commit, a.rule_code, a.file_path, a.line, sanitized);
+                    println!(
+                        "| `{}` | `{}` | `{}:{}` | {} |",
+                        a.commit, a.rule_code, a.file_path, a.line, sanitized
+                    );
                 }
                 if anomalies.len() > 10 {
-                    println!("\n*...and {} more findings recorded in scan.*", anomalies.len() - 10);
+                    println!(
+                        "\n*...and {} more findings recorded in scan.*",
+                        anomalies.len() - 10
+                    );
                 }
                 println!();
             }
@@ -672,10 +886,16 @@ fn run_eval(
     out_path: &Path,
 ) -> Result<()> {
     if format != "swebench" {
-        anyhow::bail!("Unsupported eval format '{}'. Currently supported: 'swebench'", format);
+        anyhow::bail!(
+            "Unsupported eval format '{}'. Currently supported: 'swebench'",
+            format
+        );
     }
 
-    println!("proctor eval: Loading predictions from {}", predictions_path.display());
+    println!(
+        "proctor eval: Loading predictions from {}",
+        predictions_path.display()
+    );
     if repos_dir.is_none() {
         println!("proctor eval: Note: repos_dir not provided; evaluating in fragment-safe mode.");
     }
@@ -760,12 +980,12 @@ fn run_eval(
             Vec::new()
         };
 
-        let has_block = findings.iter().any(|f| {
-            f.tier == RuleTier::Guard || matches!(f.verdict, Verdict::Block { .. })
-        });
-        let has_review = findings.iter().any(|f| {
-            f.tier == RuleTier::Report || matches!(f.verdict, Verdict::Review { .. })
-        });
+        let has_block = findings
+            .iter()
+            .any(|f| f.tier == RuleTier::Guard || matches!(f.verdict, Verdict::Block { .. }));
+        let has_review = findings
+            .iter()
+            .any(|f| f.tier == RuleTier::Report || matches!(f.verdict, Verdict::Review { .. }));
 
         let verdict_str = if has_block {
             block_count += 1;
@@ -806,9 +1026,15 @@ fn eval_instance_with_worktree(
     repo_path: &Path,
     base_commit: Option<&str>,
     model_patch: &str,
-) -> Result<(std::collections::HashMap<String, String>, std::collections::HashMap<String, String>)> {
+) -> Result<(
+    std::collections::HashMap<String, String>,
+    std::collections::HashMap<String, String>,
+)> {
     if !repo_path.is_dir() {
-        anyhow::bail!("Repository directory does not exist: {}", repo_path.display());
+        anyhow::bail!(
+            "Repository directory does not exist: {}",
+            repo_path.display()
+        );
     }
 
     let temp_dir = tempfile::tempdir()?;
@@ -823,7 +1049,13 @@ fn eval_instance_with_worktree(
 
     let wt_add = Command::new("git")
         .current_dir(repo_path)
-        .args(["worktree", "add", "--detach", wt_path.to_str().unwrap(), base_ref])
+        .args([
+            "worktree",
+            "add",
+            "--detach",
+            wt_path.to_str().unwrap(),
+            base_ref,
+        ])
         .output()?;
 
     if !wt_add.status.success() {
@@ -866,7 +1098,10 @@ fn eval_instance_with_worktree(
                                 .output();
                             if let Ok(b) = base_cmd {
                                 if b.status.success() {
-                                    base_files.insert(file.to_string(), String::from_utf8_lossy(&b.stdout).to_string());
+                                    base_files.insert(
+                                        file.to_string(),
+                                        String::from_utf8_lossy(&b.stdout).to_string(),
+                                    );
                                 }
                             }
                             // Head content from working tree
@@ -904,7 +1139,10 @@ fn eval_instance_with_worktree(
 /// Parses a unified git diff patch into base and head in-memory files using hunks for fragment mode.
 fn parse_patch_to_files(
     patch: &str,
-) -> (std::collections::HashMap<String, String>, std::collections::HashMap<String, String>) {
+) -> (
+    std::collections::HashMap<String, String>,
+    std::collections::HashMap<String, String>,
+) {
     let mut base_files = std::collections::HashMap::new();
     let mut head_files = std::collections::HashMap::new();
 

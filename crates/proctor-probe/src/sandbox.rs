@@ -31,7 +31,13 @@ impl WorktreeGuard {
         // 2. git worktree add --detach <path> <head_ref>
         let output = Command::new("git")
             .current_dir(repo_root)
-            .args(["worktree", "add", "--detach", worktree_path.to_str().unwrap(), head_ref])
+            .args([
+                "worktree",
+                "add",
+                "--detach",
+                worktree_path.to_str().unwrap(),
+                head_ref,
+            ])
             .output()
             .context("Failed to run git worktree add")?;
 
@@ -53,7 +59,12 @@ impl Drop for WorktreeGuard {
         // Force-remove worktree from git registration
         let _ = Command::new("git")
             .current_dir(&self.repo_root)
-            .args(["worktree", "remove", "--force", self.worktree_path.to_str().unwrap()])
+            .args([
+                "worktree",
+                "remove",
+                "--force",
+                self.worktree_path.to_str().unwrap(),
+            ])
             .output();
 
         let _ = Command::new("git")

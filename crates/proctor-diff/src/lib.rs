@@ -1,4 +1,7 @@
-use proctor_parse::{parse_javascript_source_file, parse_javascript_test_file, parse_python_source_file, parse_python_test_file, ParsedSourceFile, ParsedTest, ParsedTestFile};
+use proctor_parse::{
+    parse_javascript_source_file, parse_javascript_test_file, parse_python_source_file,
+    parse_python_test_file, ParsedSourceFile, ParsedTest, ParsedTestFile,
+};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
@@ -59,7 +62,8 @@ impl SemanticDiff {
                         base_sources.insert(path.clone(), parsed);
                     }
                     Err(e) => {
-                        parse_errors.push((path.clone(), format!("Base source parse error: {}", e)));
+                        parse_errors
+                            .push((path.clone(), format!("Base source parse error: {}", e)));
                     }
                 }
             }
@@ -71,7 +75,10 @@ impl SemanticDiff {
                 match parse_test(path, content) {
                     Ok(parsed) => {
                         if parsed.has_syntax_error {
-                            parse_errors.push((path.clone(), "Syntax error detected in test file".to_string()));
+                            parse_errors.push((
+                                path.clone(),
+                                "Syntax error detected in test file".to_string(),
+                            ));
                         }
                         head_tests_by_file.insert(path.clone(), parsed);
                     }
@@ -83,12 +90,16 @@ impl SemanticDiff {
                 match parse_source(path, content) {
                     Ok(parsed) => {
                         if parsed.has_syntax_error {
-                            parse_errors.push((path.clone(), "Syntax error detected in source file".to_string()));
+                            parse_errors.push((
+                                path.clone(),
+                                "Syntax error detected in source file".to_string(),
+                            ));
                         }
                         head_sources.insert(path.clone(), parsed);
                     }
                     Err(e) => {
-                        parse_errors.push((path.clone(), format!("Head source parse error: {}", e)));
+                        parse_errors
+                            .push((path.clone(), format!("Head source parse error: {}", e)));
                     }
                 }
             }
@@ -123,7 +134,8 @@ impl SemanticDiff {
             }
         }
 
-        let (changed_symbols, renamed_symbols) = compute_symbol_changes(&base_sources, &head_sources);
+        let (changed_symbols, renamed_symbols) =
+            compute_symbol_changes(&base_sources, &head_sources);
 
         // A name only counts as deleted if its bare name is gone everywhere and it was not renamed.
         // (Moving `foo` to another file deletes `old.mod.foo` but `foo` still exists.)
@@ -180,7 +192,8 @@ impl SemanticDiff {
                 for (h_idx, h_test) in all_head_tests.iter().enumerate() {
                     if !matched_head_indices.contains(&h_idx) {
                         let same_name = b_test.id.name == h_test.id.name;
-                        let overlap = compute_assertion_overlap(&b_test.assertions, &h_test.assertions);
+                        let overlap =
+                            compute_assertion_overlap(&b_test.assertions, &h_test.assertions);
                         if same_name || overlap >= 0.50 {
                             paired_tests.push(TestPair {
                                 base_test: b_test.clone(),
@@ -282,7 +295,11 @@ fn body_tokens(body: &str, own_name: &str) -> Vec<String> {
     let mut word = String::new();
     let flush = |w: &mut String, out: &mut Vec<String>| {
         if !w.is_empty() {
-            out.push(if w == own_name { "$self".into() } else { std::mem::take(w) });
+            out.push(if w == own_name {
+                "$self".into()
+            } else {
+                std::mem::take(w)
+            });
             w.clear();
         }
     };
@@ -314,7 +331,10 @@ fn bigram_similarity(a: &[String], b: &[String]) -> f32 {
     if total == 0 {
         return 0.0;
     }
-    let shared: usize = ga.iter().map(|(k, n)| (*n).min(*gb.get(k).unwrap_or(&0))).sum();
+    let shared: usize = ga
+        .iter()
+        .map(|(k, n)| (*n).min(*gb.get(k).unwrap_or(&0)))
+        .sum();
     2.0 * shared as f32 / total as f32
 }
 
@@ -329,8 +349,14 @@ fn compute_symbol_changes(
 
     let paths: HashSet<&String> = base_sources.keys().chain(head_sources.keys()).collect();
     for path in paths {
-        let base = base_sources.get(path).map(|s| &s.symbol_bodies).unwrap_or(&empty);
-        let head = head_sources.get(path).map(|s| &s.symbol_bodies).unwrap_or(&empty);
+        let base = base_sources
+            .get(path)
+            .map(|s| &s.symbol_bodies)
+            .unwrap_or(&empty);
+        let head = head_sources
+            .get(path)
+            .map(|s| &s.symbol_bodies)
+            .unwrap_or(&empty);
 
         for (name, body) in base {
             if head.get(name).is_some_and(|h| h != body) {
@@ -351,7 +377,12 @@ fn compute_symbol_changes(
                 added
                     .iter()
                     .enumerate()
-                    .map(|(i, new)| (i, bigram_similarity(&old_tokens, &body_tokens(&head[*new], new))))
+                    .map(|(i, new)| {
+                        (
+                            i,
+                            bigram_similarity(&old_tokens, &body_tokens(&head[*new], new)),
+                        )
+                    })
                     .filter(|(_, sim)| *sim >= RENAME_SIMILARITY)
                     .collect()
             };
@@ -407,7 +438,11 @@ pub fn is_test_file(path: &str) -> bool {
         return false;
     }
 
-    let file_name = p.file_name().and_then(|f| f.to_str()).unwrap_or("").to_lowercase();
+    let file_name = p
+        .file_name()
+        .and_then(|f| f.to_str())
+        .unwrap_or("")
+        .to_lowercase();
     let in_test_dir = p.components().any(|c| {
         let s = c.as_os_str().to_string_lossy().to_lowercase();
         s == "tests" || s == "test" || s == "__tests__"
@@ -495,15 +530,15 @@ class User:
 
         let diff = SemanticDiff::build(&base_files, &head_files).unwrap();
         assert_eq!(diff.paired_tests.len(), 1);
-        assert_eq!(diff.all_deleted_symbols.contains("legacy_token"), true);
+        assert!(diff.all_deleted_symbols.contains("legacy_token"));
 
         // The deleted assertion referenced `legacy_token`, which was deleted from production code
         let referenced = vec!["user".to_string(), "legacy_token".to_string()];
-        assert_eq!(diff.is_reference_orphaned(&referenced), true);
+        assert!(diff.is_reference_orphaned(&referenced));
 
         // If it references a symbol that was NOT deleted (User), strict orphan checks require all to be deleted
         let non_orphaned = vec!["User".to_string(), "legacy_token".to_string()];
-        assert_eq!(diff.is_reference_orphaned(&non_orphaned), false);
+        assert!(!diff.is_reference_orphaned(&non_orphaned));
     }
 
     #[test]
@@ -519,7 +554,10 @@ class User:
         ]);
         let diff = SemanticDiff::build(&base_files, &head_files).unwrap();
 
-        assert_eq!(diff.renamed_symbols.get("legacy_total").map(String::as_str), Some("total"));
+        assert_eq!(
+            diff.renamed_symbols.get("legacy_total").map(String::as_str),
+            Some("total")
+        );
         assert!(!diff.is_reference_orphaned(&["legacy_total".to_string()]));
         // Pure rename is not a behavior change.
         assert!(!diff.changed_symbols.contains("total"));
@@ -531,19 +569,36 @@ class User:
     fn test_rename_rejects_stubs_ties_and_operator_flips() {
         let sim = |a: &str, b: &str| bigram_similarity(&body_tokens(a, "x"), &body_tokens(b, "y"));
         // Operator flip is visible now (sets of words would call these identical).
-        assert!(sim("total = a * b\nreturn total * rate", "total = a + b\nreturn total * rate") < 1.0);
+        assert!(
+            sim(
+                "total = a * b\nreturn total * rate",
+                "total = a + b\nreturn total * rate"
+            ) < 1.0
+        );
 
         // Stub deleted + unrelated stub added: not a rename, so the old name stays deleted.
-        let base = HashMap::from([("app/m.py".to_string(), "def old_stub():\n    raise NotImplementedError\n".to_string())]);
-        let head = HashMap::from([("app/m.py".to_string(), "def new_stub():\n    raise NotImplementedError\n".to_string())]);
+        let base = HashMap::from([(
+            "app/m.py".to_string(),
+            "def old_stub():\n    raise NotImplementedError\n".to_string(),
+        )]);
+        let head = HashMap::from([(
+            "app/m.py".to_string(),
+            "def new_stub():\n    raise NotImplementedError\n".to_string(),
+        )]);
         let diff = SemanticDiff::build(&base, &head).unwrap();
         assert!(diff.renamed_symbols.is_empty());
         assert!(diff.is_reference_orphaned(&["old_stub".to_string()]));
 
         // Two identical candidates: ambiguous, not a rename.
         let body = "    s = 0\n    for i in items:\n        s += i.price * i.qty\n    return s\n";
-        let base = HashMap::from([("app/m.py".to_string(), format!("def legacy(items):\n{body}"))]);
-        let head = HashMap::from([("app/m.py".to_string(), format!("def a(items):\n{body}\ndef b(items):\n{body}"))]);
+        let base = HashMap::from([(
+            "app/m.py".to_string(),
+            format!("def legacy(items):\n{body}"),
+        )]);
+        let head = HashMap::from([(
+            "app/m.py".to_string(),
+            format!("def a(items):\n{body}\ndef b(items):\n{body}"),
+        )]);
         let diff = SemanticDiff::build(&base, &head).unwrap();
         assert!(diff.renamed_symbols.is_empty());
     }

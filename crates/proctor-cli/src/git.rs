@@ -32,11 +32,31 @@ pub fn get_changed_files(base_ref: &str, head_ref: Option<&str>) -> Result<Chang
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let paths: Vec<String> = stdout
+    let mut paths: Vec<String> = stdout
         .lines()
         .map(|l| l.trim().to_string())
         .filter(|l| !l.is_empty())
         .collect();
+
+    // When diffing against the working tree (head_ref is None), also capture untracked files
+    if head_ref.is_none() {
+        if let Ok(untracked_out) = Command::new("git")
+            .arg("ls-files")
+            .arg("--others")
+            .arg("--exclude-standard")
+            .output()
+        {
+            if untracked_out.status.success() {
+                let untracked_str = String::from_utf8_lossy(&untracked_out.stdout);
+                for l in untracked_str.lines() {
+                    let p = l.trim().to_string();
+                    if !p.is_empty() && !paths.contains(&p) {
+                        paths.push(p);
+                    }
+                }
+            }
+        }
+    }
 
     let mut base_files = HashMap::new();
     let mut head_files = HashMap::new();
@@ -100,7 +120,10 @@ pub fn load_policy_from_base(base_ref: &str) -> Policy {
                 "proctor: fatal: base git ref '{}' is not present in local repository. Cannot safely verify base policy.",
                 base_ref
             );
-            eprintln!("Ensure 'git fetch origin {}' or similar was run before proctor scan.", base_ref);
+            eprintln!(
+                "Ensure 'git fetch origin {}' or similar was run before proctor scan.",
+                base_ref
+            );
             std::process::exit(3);
         }
     }

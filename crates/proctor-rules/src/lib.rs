@@ -6,11 +6,7 @@ use std::collections::HashSet;
 use std::path::Path;
 
 /// Evaluates all integrity rules against the semantic diff and policy.
-pub fn evaluate_rules(
-    diff: &SemanticDiff,
-    policy: &Policy,
-    waivers: &WaiverSet,
-) -> Vec<Finding> {
+pub fn evaluate_rules(diff: &SemanticDiff, policy: &Policy, waivers: &WaiverSet) -> Vec<Finding> {
     let mut findings = Vec::new();
 
     // 1. PROCTOR-007: Policy Tampering (Cannot modify proctor.toml in PR)
@@ -202,28 +198,33 @@ fn evaluate_assertion_lock(diff: &SemanticDiff, policy: &Policy, findings: &mut 
         }
 
         // 1a(ii). Check for modified, weakened, or deleted assertions via AssertionStrength lattice
-        let head_texts: HashSet<&str> =
-            head_test.assertions.iter().map(|a| a.text.as_str()).collect();
+        let head_texts: HashSet<&str> = head_test
+            .assertions
+            .iter()
+            .map(|a| a.text.as_str())
+            .collect();
         let has_production_changes = !diff.head_sources.is_empty() || !diff.base_sources.is_empty();
         let linked = diff.test_links_changed_code(base_test, head_test);
 
         for base_assert in &base_test.assertions {
             // A test that only follows a production rename is not a modification.
             let followed = apply_renames(&base_assert.text, &diff.renamed_symbols);
-            if !head_texts.contains(base_assert.text.as_str()) && !head_texts.contains(followed.as_str()) {
+            if !head_texts.contains(base_assert.text.as_str())
+                && !head_texts.contains(followed.as_str())
+            {
                 // This assertion was modified or removed
                 let justified = diff.is_reference_orphaned(&base_assert.referenced_symbols);
 
                 if !justified {
-                    let id = Finding::compute_id(
-                        RuleId::AssertionLock,
-                        &test_name,
-                        &base_assert.text,
-                    );
+                    let id =
+                        Finding::compute_id(RuleId::AssertionLock, &test_name, &base_assert.text);
 
                     // Weakened = the test now has fewer assertions at or above this one's strength.
                     let at_least = |t: &proctor_parse::ParsedTest| {
-                        t.assertions.iter().filter(|a| a.strength >= base_assert.strength).count()
+                        t.assertions
+                            .iter()
+                            .filter(|a| a.strength >= base_assert.strength)
+                            .count()
                     };
                     let was_weakened = at_least(head_test) < at_least(base_test);
 
@@ -249,7 +250,11 @@ fn evaluate_assertion_lock(diff: &SemanticDiff, policy: &Policy, findings: &mut 
                             RuleTier::Guard,
                             format!(
                                 "Assertion {} in test '{}' {}.",
-                                if was_weakened { "weakened or removed" } else { "modified" },
+                                if was_weakened {
+                                    "weakened or removed"
+                                } else {
+                                    "modified"
+                                },
                                 test_name,
                                 reason
                             ),
@@ -409,10 +414,16 @@ fn repo_modules(diff: &SemanticDiff) -> HashSet<String> {
     let mut out = HashSet::new();
     for path in diff.raw_base_files.keys().chain(diff.raw_head_files.keys()) {
         let stem = match path.rsplit_once('.') {
-            Some((stem, ext)) if ["py", "js", "ts", "jsx", "tsx", "mjs", "cjs"].contains(&ext) => stem,
+            Some((stem, ext)) if ["py", "js", "ts", "jsx", "tsx", "mjs", "cjs"].contains(&ext) => {
+                stem
+            }
             _ => continue,
         };
-        let module = stem.trim_end_matches("/__init__").trim_end_matches("/index").replace('/', ".").to_lowercase();
+        let module = stem
+            .trim_end_matches("/__init__")
+            .trim_end_matches("/index")
+            .replace('/', ".")
+            .to_lowercase();
         if let Some(rest) = module.strip_prefix("src.") {
             out.insert(rest.to_string());
         }
@@ -504,8 +515,12 @@ fn evaluate_shadow_mocks(diff: &SemanticDiff, policy: &Policy, findings: &mut Ve
 
     // Check per-test mocks
     for pair in &diff.paired_tests {
-        let base_mock_targets: HashSet<&str> =
-            pair.base_test.mocks.iter().map(|m| m.target.as_str()).collect();
+        let base_mock_targets: HashSet<&str> = pair
+            .base_test
+            .mocks
+            .iter()
+            .map(|m| m.target.as_str())
+            .collect();
 
         for mock in &pair.head_test.mocks {
             if !base_mock_targets.contains(mock.target.as_str()) {
@@ -516,7 +531,12 @@ fn evaluate_shadow_mocks(diff: &SemanticDiff, policy: &Policy, findings: &mut Ve
                     let id = Finding::compute_id(RuleId::ShadowMock, &test_name, &mock.target);
 
                     let target_clean = mock.target.to_lowercase();
-                    let target_leaf = mock.target.split('.').next_back().unwrap_or(&mock.target).to_lowercase();
+                    let target_leaf = mock
+                        .target
+                        .split('.')
+                        .next_back()
+                        .unwrap_or(&mock.target)
+                        .to_lowercase();
                     let is_direct_diff_target = in_repo_symbols.iter().any(|sym| {
                         target_clean.contains(sym.as_str()) || sym.contains(target_clean.as_str())
                     });
@@ -525,7 +545,10 @@ fn evaluate_shadow_mocks(diff: &SemanticDiff, policy: &Policy, findings: &mut Ve
                         a_lower.contains(&target_leaf) || a_lower.contains(&target_clean)
                     });
 
-                    let (verdict, tier) = if is_direct_diff_target || is_sut_mock || policy.strict_mode {
+                    let (verdict, tier) = if is_direct_diff_target
+                        || is_sut_mock
+                        || policy.strict_mode
+                    {
                         (
                             Verdict::Block {
                                 rule: RuleId::ShadowMock,
@@ -632,7 +655,11 @@ fn evaluate_shadow_mocks(diff: &SemanticDiff, policy: &Policy, findings: &mut Ve
 /// PROCTOR-003: Diff-aware detection of sabotage in CI workflow files.
 /// Only scans newly added or modified lines in workflow files.
 fn evaluate_ci_sabotage(diff: &SemanticDiff, findings: &mut Vec<Finding>) {
-    let workflow_patterns = [".github/workflows", ".gitlab-ci.yml", ".circleci/config.yml"];
+    let workflow_patterns = [
+        ".github/workflows",
+        ".gitlab-ci.yml",
+        ".circleci/config.yml",
+    ];
 
     for (head_path, head_content) in &diff.raw_head_files {
         let is_ci = workflow_patterns.iter().any(|pat| head_path.contains(pat));
@@ -640,7 +667,11 @@ fn evaluate_ci_sabotage(diff: &SemanticDiff, findings: &mut Vec<Finding>) {
             continue;
         }
 
-        let base_content = diff.raw_base_files.get(head_path).map(|s| s.as_str()).unwrap_or("");
+        let base_content = diff
+            .raw_base_files
+            .get(head_path)
+            .map(|s| s.as_str())
+            .unwrap_or("");
         let base_lines: HashSet<&str> = base_content.lines().map(|l| l.trim()).collect();
 
         let shell_cheats = [
@@ -663,20 +694,25 @@ fn evaluate_ci_sabotage(diff: &SemanticDiff, findings: &mut Vec<Finding>) {
             }
 
             if trimmed.contains("continue-on-error: true") {
-                let id = Finding::compute_id(RuleId::CiWorkflowSabotage, head_path, "continue-on-error");
+                let id =
+                    Finding::compute_id(RuleId::CiWorkflowSabotage, head_path, "continue-on-error");
                 findings.push(Finding {
                     id,
                     rule_id: RuleId::CiWorkflowSabotage,
                     tier: RuleTier::Guard,
                     verdict: Verdict::Block {
                         rule: RuleId::CiWorkflowSabotage,
-                        evidence: format!("Injected 'continue-on-error: true' at line {}", line_idx + 1),
+                        evidence: format!(
+                            "Injected 'continue-on-error: true' at line {}",
+                            line_idx + 1
+                        ),
                     },
                     file_path: head_path.clone(),
                     line_number: Some(line_idx + 1),
                     test_name: None,
-                    message: "CI workflow modified to ignore step failures (continue-on-error: true)."
-                        .into(),
+                    message:
+                        "CI workflow modified to ignore step failures (continue-on-error: true)."
+                            .into(),
                     evidence: trimmed.to_string(),
                 });
             }
@@ -690,7 +726,11 @@ fn evaluate_ci_sabotage(diff: &SemanticDiff, findings: &mut Vec<Finding>) {
                         tier: RuleTier::Guard,
                         verdict: Verdict::Block {
                             rule: RuleId::CiWorkflowSabotage,
-                            evidence: format!("Injected shell suppression '{}' at line {}", cheat, line_idx + 1),
+                            evidence: format!(
+                                "Injected shell suppression '{}' at line {}",
+                                cheat,
+                                line_idx + 1
+                            ),
                         },
                         file_path: head_path.clone(),
                         line_number: Some(line_idx + 1),
@@ -725,7 +765,11 @@ fn evaluate_runner_config(diff: &SemanticDiff, findings: &mut Vec<Finding>) {
             continue;
         }
 
-        let base_content = diff.raw_base_files.get(head_path).map(|s| s.as_str()).unwrap_or("");
+        let base_content = diff
+            .raw_base_files
+            .get(head_path)
+            .map(|s| s.as_str())
+            .unwrap_or("");
 
         // Pytest and Jest weakening flags
         let tampering_patterns = [
@@ -774,7 +818,10 @@ fn added_lines<'a>(base: &str, head: &'a str) -> Vec<(usize, &'a str)> {
 /// Splits `key = value` / `"key": value` into a normalized key and the raw value.
 fn config_key_value(line: &str) -> Option<(String, &str)> {
     let idx = line.find(['=', ':'])?;
-    let key = line[..idx].trim().trim_matches(|c| c == '"' || c == '\'').to_lowercase();
+    let key = line[..idx]
+        .trim()
+        .trim_matches(|c| c == '"' || c == '\'')
+        .to_lowercase();
     if key.is_empty() || key.contains(' ') {
         return None;
     }
@@ -784,16 +831,29 @@ fn config_key_value(line: &str) -> Option<(String, &str)> {
 fn first_number_for_keys(content: &str, keys: &[&str]) -> Option<f64> {
     content.lines().find_map(|l| {
         let (k, v) = config_key_value(l.trim())?;
-        keys.contains(&k.as_str()).then(|| v.trim_matches('"').parse().ok()).flatten()
+        keys.contains(&k.as_str())
+            .then(|| v.trim_matches('"').parse().ok())
+            .flatten()
     })
 }
 
-fn push_guard(findings: &mut Vec<Finding>, rule: RuleId, path: &str, line: Option<usize>, key: &str, message: String, evidence: &str) {
+fn push_guard(
+    findings: &mut Vec<Finding>,
+    rule: RuleId,
+    path: &str,
+    line: Option<usize>,
+    key: &str,
+    message: String,
+    evidence: &str,
+) {
     findings.push(Finding {
         id: Finding::compute_id(rule, path, key),
         rule_id: rule,
         tier: RuleTier::Guard,
-        verdict: Verdict::Block { rule, evidence: message.clone() },
+        verdict: Verdict::Block {
+            rule,
+            evidence: message.clone(),
+        },
         file_path: path.to_string(),
         line_number: line,
         test_name: None,
@@ -805,16 +865,35 @@ fn push_guard(findings: &mut Vec<Finding>, rule: RuleId, path: &str, line: Optio
 /// PROCTOR-004 extension: strictness switched off, lint ignores added, coverage floor lowered.
 fn evaluate_config_loosening(diff: &SemanticDiff, findings: &mut Vec<Finding>) {
     const PY_CONFIGS: [&str; 8] = [
-        "pyproject.toml", "ruff.toml", ".ruff.toml", "setup.cfg", ".flake8", "tox.ini", "mypy.ini", ".coveragerc",
+        "pyproject.toml",
+        "ruff.toml",
+        ".ruff.toml",
+        "setup.cfg",
+        ".flake8",
+        "tox.ini",
+        "mypy.ini",
+        ".coveragerc",
     ];
     const LINT_IGNORE_KEYS: [&str; 7] = [
-        "ignore", "extend-ignore", "extend_ignore", "per-file-ignores", "per_file_ignores",
-        "extend-per-file-ignores", "disable_error_code",
+        "ignore",
+        "extend-ignore",
+        "extend_ignore",
+        "per-file-ignores",
+        "per_file_ignores",
+        "extend-per-file-ignores",
+        "disable_error_code",
     ];
 
     for (path, head) in &diff.raw_head_files {
-        let file = Path::new(path).file_name().and_then(|f| f.to_str()).unwrap_or("");
-        let base = diff.raw_base_files.get(path).map(String::as_str).unwrap_or("");
+        let file = Path::new(path)
+            .file_name()
+            .and_then(|f| f.to_str())
+            .unwrap_or("");
+        let base = diff
+            .raw_base_files
+            .get(path)
+            .map(String::as_str)
+            .unwrap_or("");
         let is_tsconfig = file.starts_with("tsconfig") && file.ends_with(".json");
         let is_eslint = file.starts_with(".eslintrc") || file.starts_with("eslint.config");
         let is_py_config = PY_CONFIGS.contains(&file);
@@ -825,13 +904,31 @@ fn evaluate_config_loosening(diff: &SemanticDiff, findings: &mut Vec<Finding>) {
         // Coverage floor lowered or removed (fail_under)
         if is_py_config {
             let keys = ["fail_under", "fail-under"];
-            match (first_number_for_keys(base, &keys), first_number_for_keys(head, &keys)) {
-                (Some(b), Some(h)) if h < b => push_guard(findings, RuleId::RunnerConfigTamper, path, None, "fail_under",
+            match (
+                first_number_for_keys(base, &keys),
+                first_number_for_keys(head, &keys),
+            ) {
+                (Some(b), Some(h)) if h < b => push_guard(
+                    findings,
+                    RuleId::RunnerConfigTamper,
+                    path,
+                    None,
+                    "fail_under",
                     format!("Coverage floor lowered from {} to {} in '{}'.", b, h, path),
-                    &format!("fail_under {} -> {}", b, h)),
-                (Some(b), None) => push_guard(findings, RuleId::RunnerConfigTamper, path, None, "fail_under_removed",
-                    format!("Coverage floor (fail_under = {}) removed from '{}'.", b, path),
-                    &format!("fail_under {} removed", b)),
+                    &format!("fail_under {} -> {}", b, h),
+                ),
+                (Some(b), None) => push_guard(
+                    findings,
+                    RuleId::RunnerConfigTamper,
+                    path,
+                    None,
+                    "fail_under_removed",
+                    format!(
+                        "Coverage floor (fail_under = {}) removed from '{}'.",
+                        b, path
+                    ),
+                    &format!("fail_under {} removed", b),
+                ),
                 _ => {}
             }
         }
@@ -845,19 +942,39 @@ fn evaluate_config_loosening(diff: &SemanticDiff, findings: &mut Vec<Finding>) {
             }
             if let Some((key, value)) = config_key_value(line) {
                 let value = value.trim_matches(|c| c == '"' || c == '\'').to_lowercase();
-                let is_strict_key = key == "strict" || key.starts_with("strictnull") || key.starts_with("noimplicit");
+                let is_strict_key = key == "strict"
+                    || key.starts_with("strictnull")
+                    || key.starts_with("noimplicit");
                 if is_strict_key && value == "true" {
-                    let still_set = head.lines().filter_map(|l| config_key_value(l.trim())).any(|(k, _)| k == key);
+                    let still_set = head
+                        .lines()
+                        .filter_map(|l| config_key_value(l.trim()))
+                        .any(|(k, _)| k == key);
                     if !still_set {
-                        push_guard(findings, RuleId::RunnerConfigTamper, path, Some(idx + 1), &format!("removed:{}", line),
-                            format!("Strictness setting removed from '{}': '{}' (base line {}).", path, line, idx + 1), line);
+                        push_guard(
+                            findings,
+                            RuleId::RunnerConfigTamper,
+                            path,
+                            Some(idx + 1),
+                            &format!("removed:{}", line),
+                            format!(
+                                "Strictness setting removed from '{}': '{}' (base line {}).",
+                                path,
+                                line,
+                                idx + 1
+                            ),
+                            line,
+                        );
                     }
                 }
             }
         }
 
         // Track the most recent `key =` so list continuation lines inherit it.
-        let added: HashSet<usize> = added_lines(base, head).into_iter().map(|(n, _)| n).collect();
+        let added: HashSet<usize> = added_lines(base, head)
+            .into_iter()
+            .map(|(n, _)| n)
+            .collect();
         let mut current_key = String::new();
         let mut section_key = String::new();
         // `[[tool.mypy.overrides]]` / `[mypy-pkg.*]`: per-module escape hatches, a normal migration tool.
@@ -868,7 +985,12 @@ fn evaluate_config_loosening(diff: &SemanticDiff, findings: &mut Vec<Finding>) {
             if line.starts_with('[') && line.ends_with(']') {
                 current_key.clear();
                 scoped_section = line.contains("overrides") || line.starts_with("[mypy-");
-                section_key = line.trim_matches(['[', ']']).rsplit('.').next().unwrap_or("").to_lowercase();
+                section_key = line
+                    .trim_matches(['[', ']'])
+                    .rsplit('.')
+                    .next()
+                    .unwrap_or("")
+                    .to_lowercase();
                 continue;
             }
             let kv = config_key_value(line);
@@ -878,21 +1000,37 @@ fn evaluate_config_loosening(diff: &SemanticDiff, findings: &mut Vec<Finding>) {
             if !added.contains(&(idx + 1)) {
                 continue;
             }
-            let value = kv.as_ref().map(|(_, v)| v.trim_matches(|c| c == '"' || c == '\'').to_lowercase());
+            let value = kv
+                .as_ref()
+                .map(|(_, v)| v.trim_matches(|c| c == '"' || c == '\'').to_lowercase());
             let key = kv.as_ref().map(|(k, _)| k.as_str()).unwrap_or("");
 
             let strictness_off = value.as_deref() == Some("false")
-                && (key.starts_with("strict") || key.starts_with("noimplicit") || key.starts_with("nounchecked")
-                    || key == "disallow_untyped_defs" || key == "warn_unused_ignores");
+                && (key.starts_with("strict")
+                    || key.starts_with("noimplicit")
+                    || key.starts_with("nounchecked")
+                    || key == "disallow_untyped_defs"
+                    || key == "warn_unused_ignores");
             let mypy_ignore = key == "ignore_errors" && value.as_deref() == Some("true");
             let eslint_off = is_eslint && matches!(value.as_deref(), Some("off") | Some("0"));
 
             if (strictness_off || mypy_ignore || eslint_off) && !scoped_section && !new_file {
-                push_guard(findings, RuleId::RunnerConfigTamper, path, Some(idx + 1), line,
-                    format!("Checker strictness loosened in '{}': '{}'", path, line), line);
+                push_guard(
+                    findings,
+                    RuleId::RunnerConfigTamper,
+                    path,
+                    Some(idx + 1),
+                    line,
+                    format!("Checker strictness loosened in '{}': '{}'", path, line),
+                    line,
+                );
             } else if strictness_off || mypy_ignore || eslint_off {
                 let id = Finding::compute_id(RuleId::RunnerConfigTamper, path, line);
-                let why = if new_file { "new config file" } else { "per-module override" };
+                let why = if new_file {
+                    "new config file"
+                } else {
+                    "per-module override"
+                };
                 findings.push(Finding {
                     id: id.clone(),
                     rule_id: RuleId::RunnerConfigTamper,
@@ -908,7 +1046,8 @@ fn evaluate_config_loosening(diff: &SemanticDiff, findings: &mut Vec<Finding>) {
                     evidence: line.to_string(),
                 });
             } else if is_py_config
-                && (LINT_IGNORE_KEYS.contains(&current_key.as_str()) || LINT_IGNORE_KEYS.contains(&section_key.as_str()))
+                && (LINT_IGNORE_KEYS.contains(&current_key.as_str())
+                    || LINT_IGNORE_KEYS.contains(&section_key.as_str()))
             {
                 // Adding an ignore code is common in human PRs: report, don't block.
                 let id = Finding::compute_id(RuleId::RunnerConfigTamper, path, line);
@@ -923,7 +1062,10 @@ fn evaluate_config_loosening(diff: &SemanticDiff, findings: &mut Vec<Finding>) {
                     file_path: path.clone(),
                     line_number: Some(idx + 1),
                     test_name: None,
-                    message: format!("Lint/type-check ignore list extended in '{}' ({}).", path, current_key),
+                    message: format!(
+                        "Lint/type-check ignore list extended in '{}' ({}).",
+                        path, current_key
+                    ),
                     evidence: line.to_string(),
                 });
             }
@@ -933,7 +1075,10 @@ fn evaluate_config_loosening(diff: &SemanticDiff, findings: &mut Vec<Finding>) {
 
 /// Returns a label if the line is a file-level / untargeted checker suppression.
 fn blanket_suppression(path: &str, line: &str) -> Option<&'static str> {
-    let ext = Path::new(path).extension().and_then(|e| e.to_str()).unwrap_or("");
+    let ext = Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("");
     match ext {
         "py" => {
             let comment = &line[line.find('#')?..];
@@ -959,7 +1104,9 @@ fn blanket_suppression(path: &str, line: &str) -> Option<&'static str> {
             // eslint-disable-line / -next-line are line-scoped; only untargeted file-level disables count.
             (!rest.starts_with('-') && rules.is_empty()).then_some("blanket eslint-disable")
         }
-        "rs" => line.starts_with("#![allow(").then_some("crate-level #![allow]"),
+        "rs" => line
+            .starts_with("#![allow(")
+            .then_some("crate-level #![allow]"),
         _ => None,
     }
 }
@@ -967,7 +1114,11 @@ fn blanket_suppression(path: &str, line: &str) -> Option<&'static str> {
 /// PROCTOR-008: Blanket suppressions added to source or test files.
 fn evaluate_blanket_suppressions(diff: &SemanticDiff, findings: &mut Vec<Finding>) {
     for (path, head) in &diff.raw_head_files {
-        let base = diff.raw_base_files.get(path).map(String::as_str).unwrap_or("");
+        let base = diff
+            .raw_base_files
+            .get(path)
+            .map(String::as_str)
+            .unwrap_or("");
         for (line_no, line) in added_lines(base, head) {
             if let Some(kind) = blanket_suppression(path, line) {
                 let id = Finding::compute_id(RuleId::BlanketSuppression, path, line);
@@ -982,7 +1133,10 @@ fn evaluate_blanket_suppressions(diff: &SemanticDiff, findings: &mut Vec<Finding
                     file_path: path.clone(),
                     line_number: Some(line_no),
                     test_name: None,
-                    message: format!("Blanket checker suppression ({}) added in '{}'.", kind, path),
+                    message: format!(
+                        "Blanket checker suppression ({}) added in '{}'.",
+                        kind, path
+                    ),
                     evidence: line.to_string(),
                 });
             }
@@ -1024,7 +1178,8 @@ fn evaluate_snapshot_integrity(diff: &SemanticDiff, findings: &mut Vec<Finding>)
                 }
             } else {
                 // Snapshot file was deleted
-                let id = Finding::compute_id(RuleId::SnapshotIntegrity, base_path, "deleted_snapshot");
+                let id =
+                    Finding::compute_id(RuleId::SnapshotIntegrity, base_path, "deleted_snapshot");
                 findings.push(Finding {
                     id,
                     rule_id: RuleId::SnapshotIntegrity,
@@ -1420,8 +1575,10 @@ def test_double(x, expected):
 
     #[test]
     fn test_bare_wildcard_mock_rejected() {
-        let mut policy = Policy::default();
-        policy.allow_mocks = vec!["*".to_string()]; // Invalid bare wildcard
+        let policy = Policy {
+            allow_mocks: vec!["*".to_string()], // Invalid bare wildcard
+            ..Default::default()
+        };
 
         assert!(!is_mock_allowed("app.billing", &policy.allow_mocks));
         assert!(!is_mock_allowed("stripe", &policy.allow_mocks));
@@ -1485,12 +1642,20 @@ def test_calc():
         let mut author_ack_set = WaiverSet::default();
         author_ack_set.author_acks.insert(finding_id.clone());
         let unsuppressed = evaluate_rules(&diff, &policy, &author_ack_set);
-        assert_eq!(unsuppressed.len(), 1, "Author ack must not clear Guard finding");
+        assert_eq!(
+            unsuppressed.len(),
+            1,
+            "Author ack must not clear Guard finding"
+        );
 
         // A second reviewer maintainer waiver CAN clear it
         let mut maintainer_set = WaiverSet::default();
         maintainer_set.maintainer_waivers.insert(finding_id);
         let suppressed = evaluate_rules(&diff, &policy, &maintainer_set);
-        assert_eq!(suppressed.len(), 0, "Maintainer waiver can clear Guard finding");
+        assert_eq!(
+            suppressed.len(),
+            0,
+            "Maintainer waiver can clear Guard finding"
+        );
     }
 }

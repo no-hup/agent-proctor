@@ -21,7 +21,11 @@ fn load_tree(root: &Path, dir: &Path, files: &mut HashMap<String, String>) {
         if path.is_dir() {
             load_tree(root, &path, files);
         } else {
-            let rel = path.strip_prefix(root).unwrap().to_string_lossy().replace('\\', "/");
+            let rel = path
+                .strip_prefix(root)
+                .unwrap()
+                .to_string_lossy()
+                .replace('\\', "/");
             files.insert(rel, fs::read_to_string(&path).unwrap());
         }
     }
@@ -119,10 +123,18 @@ fn test_corpus_fixtures_match_expected_verdicts() {
 
         // 4. Arbitrary multi-file layouts: <case>/base/** and <case>/head/**
         if case_dir.join("base").is_dir() {
-            load_tree(&case_dir.join("base"), &case_dir.join("base"), &mut base_files);
+            load_tree(
+                &case_dir.join("base"),
+                &case_dir.join("base"),
+                &mut base_files,
+            );
         }
         if case_dir.join("head").is_dir() {
-            load_tree(&case_dir.join("head"), &case_dir.join("head"), &mut head_files);
+            load_tree(
+                &case_dir.join("head"),
+                &case_dir.join("head"),
+                &mut head_files,
+            );
         }
 
         assert!(
@@ -158,7 +170,9 @@ fn test_corpus_fixtures_match_expected_verdicts() {
                 expected_rule_code
             );
 
-            let matching_finding = findings.iter().find(|f| f.rule_id.code() == expected_rule_code);
+            let matching_finding = findings
+                .iter()
+                .find(|f| f.rule_id.code() == expected_rule_code);
             assert!(
                 matching_finding.is_some(),
                 "Corpus case '{}' did not produce expected rule code {}. Actual findings: {:?}",

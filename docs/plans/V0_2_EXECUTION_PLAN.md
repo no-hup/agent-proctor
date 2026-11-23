@@ -94,7 +94,7 @@
 
     **Verdict:** 🟢 **Zero review needed in test diff.** Merge with confidence.
     ```
-- [ ] **Task 3.2: Sync Receipt Rendering to `proctor-action`**
+- [x] **Task 3.2: Sync Receipt Rendering to `proctor-action`**
   - Update `proctor-action/action.yml` to write the full receipt to `$GITHUB_STEP_SUMMARY`.
   - Provide an option for a sticky PR comment (`comment: true`, default `false`).
 
@@ -151,21 +151,21 @@
 *Goal: Adopt the gem from `ai-test-integrity-review` to provide undeniable positive proof that newly added tests actually catch bugs.*
 
 ### Tasks:
-- [ ] **Task 5.1: Ephemeral Base Worktree Test Runner (`proctor verify`)**
+- [x] **Task 5.1: Ephemeral Base Worktree Test Runner (`proctor verify`)**
   - Add `proctor verify --runner pytest` in `proctor-cli`.
   - Create an ephemeral temporary worktree checkout of `base_ref`.
   - Overlay newly added or modified test files onto the base worktree.
   - Run the user's test command (`pytest <changed_tests>`) against base code.
-- [ ] **Task 5.2: Failure Mode Classification**
+- [x] **Task 5.2: Failure Mode Classification**
   - If test **fails with `AssertionError`** on base and **passes** on head:
     $\to$ Mark **`VERIFIED REGRESSION TEST`** (proven to prevent regressions).
   - If test **fails with `ImportError` or `ModuleNotFoundError`** on base:
     $\to$ Mark **`TRIVIALLY RED`** (symbol didn't exist, not a proven regression).
   - If test **passes on both base and head**:
     $\to$ Mark **`TAUTOLOGY / NON-DISCRIMINATING`** (test does not exercise the change).
-- [ ] **Task 5.3: Jest / Vitest Support**
+- [x] **Task 5.3: Jest / Vitest Support**
   - Extend worktree runner to `jest` and `vitest` using npm/pnpm test invocations.
-- [ ] **Task 5.4: First-Class Inconclusive State**
+- [x] **Task 5.4: First-Class Inconclusive State**
   - If tests require databases, networks, or take >3x baseline timeout, report `INCONCLUSIVE` with the specific reason; never fail the CI build.
 
 ---

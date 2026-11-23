@@ -1,3 +1,5 @@
+#![allow(clippy::needless_borrows_for_generic_args, clippy::len_zero)]
+
 use std::fs;
 use std::process::Command;
 
@@ -32,7 +34,11 @@ fn test_probe_clean_worktree_lifecycle() {
     fs::write(repo_path.join("app/tax.py"), base_app).unwrap();
 
     let run = |args: &[&str]| {
-        Command::new("git").current_dir(repo_path).args(args).output().unwrap();
+        Command::new("git")
+            .current_dir(repo_path)
+            .args(args)
+            .output()
+            .unwrap();
     };
     run(&["add", "."]);
     run(&["commit", "-m", "Initial commit"]);
@@ -58,7 +64,11 @@ fn test_probe_clean_worktree_lifecycle() {
         .unwrap();
     let wt_stdout = String::from_utf8_lossy(&wt_list.stdout);
     let worktree_count = wt_stdout.lines().count();
-    assert_eq!(worktree_count, 1, "Expected only 1 worktree remaining, found: {}", wt_stdout);
+    assert_eq!(
+        worktree_count, 1,
+        "Expected only 1 worktree remaining, found: {}",
+        wt_stdout
+    );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("proctor probe"));

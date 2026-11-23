@@ -1,3 +1,5 @@
+#![allow(clippy::needless_borrows_for_generic_args, clippy::len_zero)]
+
 use std::fs;
 use std::process::Command;
 
@@ -287,20 +289,14 @@ fn test_cli_version_and_audit_smoke() {
     let proctor_bin = env!("CARGO_BIN_EXE_proctor");
 
     // Test `proctor version`
-    let out_version = Command::new(proctor_bin)
-        .arg("version")
-        .output()
-        .unwrap();
+    let out_version = Command::new(proctor_bin).arg("version").output().unwrap();
     assert!(out_version.status.success());
     let stdout_version = String::from_utf8_lossy(&out_version.stdout);
     assert!(stdout_version.contains("v0.2.0"));
     assert!(stdout_version.contains("Tree-sitter"));
 
     // Test `proctor --version`
-    let out_flag = Command::new(proctor_bin)
-        .arg("--version")
-        .output()
-        .unwrap();
+    let out_flag = Command::new(proctor_bin).arg("--version").output().unwrap();
     assert!(out_flag.status.success());
     let stdout_flag = String::from_utf8_lossy(&out_flag.stdout);
     assert!(stdout_flag.contains("0.2.0"));
@@ -328,7 +324,10 @@ fn test_cli_version_and_audit_smoke() {
         .unwrap();
     assert!(out_audit.status.success());
     let stdout_audit = String::from_utf8_lossy(&out_audit.stdout);
-    assert!(stdout_audit.contains("Commits Audited : 1") || stdout_audit.contains("Historical Repository Integrity Scan"));
+    assert!(
+        stdout_audit.contains("Commits Audited : 1")
+            || stdout_audit.contains("Historical Repository Integrity Scan")
+    );
 }
 
 #[test]
@@ -338,7 +337,11 @@ fn test_cli_receipt_and_sarif_file_emission() {
     setup_repo(repo_path);
 
     fs::create_dir_all(repo_path.join("tests")).unwrap();
-    fs::write(repo_path.join("tests/test_demo.py"), "def test_ok():\n    assert 1 == 1\n").unwrap();
+    fs::write(
+        repo_path.join("tests/test_demo.py"),
+        "def test_ok():\n    assert 1 == 1\n",
+    )
+    .unwrap();
 
     let run = |args: &[&str]| {
         Command::new("git")
@@ -351,7 +354,11 @@ fn test_cli_receipt_and_sarif_file_emission() {
     run(&["commit", "-m", "Base commit"]);
 
     // Modify test file
-    fs::write(repo_path.join("tests/test_demo.py"), "def test_ok():\n    assert 1 == 1\n    assert 2 == 2\n").unwrap();
+    fs::write(
+        repo_path.join("tests/test_demo.py"),
+        "def test_ok():\n    assert 1 == 1\n    assert 2 == 2\n",
+    )
+    .unwrap();
 
     let receipt_path = repo_path.join("receipt.md");
     let sarif_path = repo_path.join("results.sarif");
@@ -361,20 +368,110 @@ fn test_cli_receipt_and_sarif_file_emission() {
         .current_dir(repo_path)
         .args(&[
             "scan",
-            "--base", "HEAD",
-            "--receipt", receipt_path.to_str().unwrap(),
-            "--sarif", sarif_path.to_str().unwrap(),
+            "--base",
+            "HEAD",
+            "--receipt",
+            receipt_path.to_str().unwrap(),
+            "--sarif",
+            sarif_path.to_str().unwrap(),
         ])
         .output()
         .unwrap();
 
     assert!(out.status.success());
-    assert!(receipt_path.exists(), "receipt.md should be written to disk");
+    assert!(
+        receipt_path.exists(),
+        "receipt.md should be written to disk"
+    );
     let receipt_content = fs::read_to_string(&receipt_path).unwrap();
-    assert!(receipt_content.contains("Test-Change Receipt"), "receipt must contain header: {}", receipt_content);
+    assert!(
+        receipt_content.contains("Test-Change Receipt"),
+        "receipt must contain header: {}",
+        receipt_content
+    );
 
-    assert!(sarif_path.exists(), "results.sarif should be written to disk");
+    assert!(
+        sarif_path.exists(),
+        "results.sarif should be written to disk"
+    );
     let sarif_content = fs::read_to_string(&sarif_path).unwrap();
-    let sarif_json: serde_json::Value = serde_json::from_str(&sarif_content).expect("Valid JSON SARIF");
+    let sarif_json: serde_json::Value =
+        serde_json::from_str(&sarif_content).expect("Valid JSON SARIF");
     assert_eq!(sarif_json["version"], "2.1.0");
+}
+
+#[test]
+fn test_cli_verify_command_execution() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let repo_path = temp_dir.path();
+    setup_repo(repo_path);
+
+    // 1. Base code has a bug
+    fs::create_dir_all(repo_path.join("app")).unwrap();
+    fs::create_dir_all(repo_path.join("tests")).unwrap();
+    fs::write(repo_path.join("app/__init__.py"), "").unwrap();
+    fs::write(
+        repo_path.join("app/math.py"),
+        "def add(a, b):\n    return a - b\n",
+    )
+    .unwrap();
+
+    let run = |args: &[&str]| {
+        Command::new("git")
+            .current_dir(repo_path)
+            .args(args)
+            .output()
+            .unwrap();
+    };
+    run(&["add", "."]);
+    run(&["commit", "-m", "Base commit with buggy math"]);
+
+    // 2. Head commit fixes bug and adds a test
+    fs::write(
+        repo_path.join("app/math.py"),
+        "def add(a, b):\n    return a + b\n",
+    )
+    .unwrap();
+    fs::write(
+        repo_path.join("tests/test_math.py"),
+        "from app.math import add\ndef test_add():\n    assert add(2, 3) == 5\n",
+    )
+    .unwrap();
+
+    let receipt_path = repo_path.join("verification_receipt.md");
+    let proctor_bin = env!("CARGO_BIN_EXE_proctor");
+
+    let out = Command::new(proctor_bin)
+        .current_dir(repo_path)
+        .args(&[
+            "verify",
+            "--base",
+            "HEAD",
+            "--format",
+            "json",
+            "--receipt",
+            receipt_path.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+
+    assert!(out.status.success(), "proctor verify should exit 0");
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("tests/test_math.py"),
+        "Output should contain test file name: {}",
+        stdout
+    );
+
+    assert!(
+        receipt_path.exists(),
+        "verification receipt should be written to disk"
+    );
+    let receipt_content = fs::read_to_string(&receipt_path).unwrap();
+    assert!(
+        receipt_content.contains("Dynamic Test Verification Receipt"),
+        "receipt must contain header: {}",
+        receipt_content
+    );
 }

@@ -1,4 +1,4 @@
-use crate::{ParsedAssertion, ParsedMock, ParsedTest, ParsedTestFile, ParsedSourceFile};
+use crate::{ParsedAssertion, ParsedMock, ParsedSourceFile, ParsedTest, ParsedTestFile};
 use proctor_core::{AssertionStrength, TestId};
 use tree_sitter::{Node, Parser};
 
@@ -29,7 +29,15 @@ pub fn parse_javascript_test_file(
     let mut harness_mocks = Vec::new();
     let mut imports = Vec::new();
 
-    walk_js_nodes(root, source, file_path, &[], &mut tests, &mut harness_mocks, &mut imports);
+    walk_js_nodes(
+        root,
+        source,
+        file_path,
+        &[],
+        &mut tests,
+        &mut harness_mocks,
+        &mut imports,
+    );
 
     Ok(ParsedTestFile {
         file_path: file_path.to_string(),
@@ -67,7 +75,14 @@ pub fn parse_javascript_source_file(
     let mut string_literals = Vec::new();
     let mut symbol_bodies = std::collections::HashMap::new();
 
-    extract_js_source_symbols(root, source, false, &mut defined_symbols, &mut symbol_bodies, &mut string_literals);
+    extract_js_source_symbols(
+        root,
+        source,
+        false,
+        &mut defined_symbols,
+        &mut symbol_bodies,
+        &mut string_literals,
+    );
 
     Ok(ParsedSourceFile {
         file_path: file_path.to_string(),
@@ -97,17 +112,42 @@ fn walk_js_nodes(
             "call_expression" => {
                 if let Some(fn_node) = child.child_by_field_name("function") {
                     let fn_name = fn_node.utf8_text(source.as_bytes()).unwrap_or("");
-                    if fn_name == "describe" || fn_name == "context" || fn_name == "describe.skip" || fn_name == "xdescribe" {
-                        let suite_name = extract_first_string_arg(child, source).unwrap_or_else(|| "describe".to_string());
+                    if fn_name == "describe"
+                        || fn_name == "context"
+                        || fn_name == "describe.skip"
+                        || fn_name == "xdescribe"
+                    {
+                        let suite_name = extract_first_string_arg(child, source)
+                            .unwrap_or_else(|| "describe".to_string());
                         let mut new_scope = scope.to_vec();
                         new_scope.push(suite_name);
                         if let Some(args) = child.child_by_field_name("arguments") {
-                            walk_js_nodes(args, source, file_path, &new_scope, tests, harness_mocks, imports);
+                            walk_js_nodes(
+                                args,
+                                source,
+                                file_path,
+                                &new_scope,
+                                tests,
+                                harness_mocks,
+                                imports,
+                            );
                         }
-                    } else if fn_name == "test" || fn_name == "it" || fn_name == "test.skip" || fn_name == "it.skip" || fn_name == "xit" || fn_name == "xtest" || fn_name == "test.todo" || fn_name == "it.todo" {
-                        let is_skipped = fn_name.contains("skip") || fn_name.starts_with('x') || fn_name.contains("todo");
-                        let test_name = extract_first_string_arg(child, source).unwrap_or_else(|| "test".to_string());
-                        let mut parsed_test = extract_js_test(child, source, file_path, scope, &test_name);
+                    } else if fn_name == "test"
+                        || fn_name == "it"
+                        || fn_name == "test.skip"
+                        || fn_name == "it.skip"
+                        || fn_name == "xit"
+                        || fn_name == "xtest"
+                        || fn_name == "test.todo"
+                        || fn_name == "it.todo"
+                    {
+                        let is_skipped = fn_name.contains("skip")
+                            || fn_name.starts_with('x')
+                            || fn_name.contains("todo");
+                        let test_name = extract_first_string_arg(child, source)
+                            .unwrap_or_else(|| "test".to_string());
+                        let mut parsed_test =
+                            extract_js_test(child, source, file_path, scope, &test_name);
                         parsed_test.is_skipped = is_skipped;
                         tests.push(parsed_test);
                     } else if let Some(mock) = extract_js_mock_call(child, source) {
@@ -116,7 +156,15 @@ fn walk_js_nodes(
                 }
             }
             _ => {
-                walk_js_nodes(child, source, file_path, scope, tests, harness_mocks, imports);
+                walk_js_nodes(
+                    child,
+                    source,
+                    file_path,
+                    scope,
+                    tests,
+                    harness_mocks,
+                    imports,
+                );
             }
         }
     }
@@ -188,7 +236,11 @@ fn extract_js_assertions_and_mocks(
 }
 
 fn parse_expect_call(call_node: Node, source: &str) -> Option<ParsedAssertion> {
-    let text = call_node.utf8_text(source.as_bytes()).ok()?.trim().to_string();
+    let text = call_node
+        .utf8_text(source.as_bytes())
+        .ok()?
+        .trim()
+        .to_string();
     let line = call_node.start_position().row + 1;
 
     let mut referenced_symbols = Vec::new();
@@ -207,11 +259,18 @@ fn parse_expect_call(call_node: Node, source: &str) -> Option<ParsedAssertion> {
         || text.contains(".toBeNaN()")
     {
         strength = AssertionStrength::Weak;
-    } else if text.contains(".toBe(") || text.contains(".toEqual(") || text.contains(".toStrictEqual(") {
+    } else if text.contains(".toBe(")
+        || text.contains(".toEqual(")
+        || text.contains(".toStrictEqual(")
+    {
         strength = AssertionStrength::Exact;
         if let Some(args) = call_node.child_by_field_name("arguments") {
             let arg_txt = args.utf8_text(source.as_bytes()).unwrap_or("").trim();
-            expected_literal = Some(arg_txt.trim_matches(|c| c == '(' || c == ')' || c == '\'' || c == '"' || c == '`').to_string());
+            expected_literal = Some(
+                arg_txt
+                    .trim_matches(|c| c == '(' || c == ')' || c == '\'' || c == '"' || c == '`')
+                    .to_string(),
+            );
         }
     }
 
@@ -232,7 +291,12 @@ fn extract_js_identifiers_and_props(node: Node, source: &str, symbols: &mut Vec<
         match child.kind() {
             "identifier" | "property_identifier" => {
                 let name = child.utf8_text(source.as_bytes()).unwrap_or("");
-                if !name.is_empty() && name != "expect" && name != "toBe" && name != "toEqual" && name != "toBeDefined" {
+                if !name.is_empty()
+                    && name != "expect"
+                    && name != "toBe"
+                    && name != "toEqual"
+                    && name != "toBeDefined"
+                {
                     symbols.push(name.to_string());
                 }
             }
@@ -255,7 +319,10 @@ fn collect_js_locals(node: Node, source: &str, locals: &mut std::collections::Ha
     let cursor = &mut node.walk();
     for child in node.children(cursor) {
         if child.kind() == "variable_declarator" {
-            if let Some(n) = child.child_by_field_name("name").filter(|n| n.kind() == "identifier") {
+            if let Some(n) = child
+                .child_by_field_name("name")
+                .filter(|n| n.kind() == "identifier")
+            {
                 locals.insert(n.utf8_text(source.as_bytes()).unwrap_or("").to_string());
             }
         }
@@ -271,7 +338,12 @@ fn extract_js_mock_call(node: Node, source: &str) -> Option<ParsedMock> {
     let fn_child = node.child_by_field_name("function")?;
     let fn_text = fn_child.utf8_text(source.as_bytes()).ok()?;
 
-    if fn_text == "jest.mock" || fn_text == "vi.mock" || fn_text.ends_with(".mock") || fn_text.contains("spyOn") || fn_text.contains("doMock") {
+    if fn_text == "jest.mock"
+        || fn_text == "vi.mock"
+        || fn_text.ends_with(".mock")
+        || fn_text.contains("spyOn")
+        || fn_text.contains("doMock")
+    {
         if let Some(target) = extract_first_string_arg(node, source) {
             return Some(ParsedMock {
                 line: node.start_position().row + 1,
@@ -289,7 +361,10 @@ fn extract_first_string_arg(call_node: Node, source: &str) -> Option<String> {
     for arg in args.children(cursor) {
         if arg.kind() == "string" {
             let txt = arg.utf8_text(source.as_bytes()).ok()?;
-            return Some(txt.trim_matches(|c| c == '\'' || c == '"' || c == '`').to_string());
+            return Some(
+                txt.trim_matches(|c| c == '\'' || c == '"' || c == '`')
+                    .to_string(),
+            );
         }
     }
     None
@@ -312,7 +387,10 @@ fn extract_js_source_symbols(
                     let name = name_node.utf8_text(source.as_bytes()).unwrap_or("");
                     if !name.is_empty() {
                         defined_symbols.push(name.to_string());
-                        let body = child.child_by_field_name("body").and_then(|b| b.utf8_text(source.as_bytes()).ok()).unwrap_or("");
+                        let body = child
+                            .child_by_field_name("body")
+                            .and_then(|b| b.utf8_text(source.as_bytes()).ok())
+                            .unwrap_or("");
                         crate::record_body(symbol_bodies, name, body);
                     }
                 }
@@ -322,7 +400,10 @@ fn extract_js_source_symbols(
                     let name = name_node.utf8_text(source.as_bytes()).unwrap_or("");
                     if !name.is_empty() {
                         defined_symbols.push(name.to_string());
-                        let body = child.child_by_field_name("value").and_then(|b| b.utf8_text(source.as_bytes()).ok()).unwrap_or("");
+                        let body = child
+                            .child_by_field_name("value")
+                            .and_then(|b| b.utf8_text(source.as_bytes()).ok())
+                            .unwrap_or("");
                         crate::record_body(symbol_bodies, name, body);
                     }
                 }
@@ -337,8 +418,18 @@ fn extract_js_source_symbols(
             _ => {}
         }
         let nested = in_function
-            || matches!(child.kind(), "statement_block" | "arrow_function" | "function_expression" | "function");
-        extract_js_source_symbols(child, source, nested, defined_symbols, symbol_bodies, string_literals);
+            || matches!(
+                child.kind(),
+                "statement_block" | "arrow_function" | "function_expression" | "function"
+            );
+        extract_js_source_symbols(
+            child,
+            source,
+            nested,
+            defined_symbols,
+            symbol_bodies,
+            string_literals,
+        );
     }
 }
 

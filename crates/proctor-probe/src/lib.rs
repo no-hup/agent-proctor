@@ -3,10 +3,12 @@
 pub mod mutant;
 pub mod runner;
 pub mod sandbox;
+pub mod verify;
 
 pub use mutant::{apply_mutant_with_sentinel, generate_mutants, generate_targeted_mutants, Mutant};
 pub use runner::{execute_probe_run, ProbeOutcome};
 pub use sandbox::WorktreeGuard;
+pub use verify::{verify_tests, RunnerType, TestVerificationResult, VerificationStatus};
 
 use anyhow::Result;
 use proctor_core::{Finding, RuleId, RuleTier, Verdict};
@@ -107,7 +109,12 @@ pub fn run_probe(
             Some(&modified_lines)
         };
 
-        let mutants = generate_targeted_mutants(src_path, &original_content, target_set, max_mutants_per_file);
+        let mutants = generate_targeted_mutants(
+            src_path,
+            &original_content,
+            target_set,
+            max_mutants_per_file,
+        );
 
         for mutant in mutants {
             // Apply mutant with sentinel hook

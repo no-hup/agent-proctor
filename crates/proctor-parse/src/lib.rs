@@ -1,11 +1,11 @@
 use proctor_core::*;
 use std::collections::HashMap;
 
-pub mod python;
 pub mod javascript;
+pub mod python;
 
-pub use python::{parse_python_source_file, parse_python_test_file};
 pub use javascript::{parse_javascript_source_file, parse_javascript_test_file};
+pub use python::{parse_python_source_file, parse_python_test_file};
 
 #[derive(Debug, Clone)]
 pub struct ParsedTestFile {
@@ -67,8 +67,9 @@ mod tests {
     #[test]
     fn test_tree_sitter_compiles() {
         let mut parser = tree_sitter::Parser::new();
-        parser.set_language(&tree_sitter_python::language()).unwrap();
+        parser
+            .set_language(&tree_sitter_python::language())
+            .unwrap();
         assert!(parser.language().is_some());
     }
 }
-

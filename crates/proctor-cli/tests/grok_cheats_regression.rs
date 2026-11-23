@@ -1,3 +1,5 @@
+#![allow(clippy::needless_borrows_for_generic_args, clippy::len_zero)]
+
 use std::fs;
 use std::process::Command;
 
@@ -32,7 +34,11 @@ fn test_regression_value_swap_same_count_blocks() {
     fs::write(repo_path.join("app/tax.py"), base_app).unwrap();
 
     let run = |args: &[&str]| {
-        Command::new("git").current_dir(repo_path).args(args).output().unwrap();
+        Command::new("git")
+            .current_dir(repo_path)
+            .args(args)
+            .output()
+            .unwrap();
     };
     run(&["add", "."]);
     run(&["commit", "-m", "Initial commit"]);
@@ -65,7 +71,11 @@ fn test_regression_or_true_vacuous_assertion_blocks() {
     fs::write(repo_path.join("tests/test_tax.py"), base_test).unwrap();
 
     let run = |args: &[&str]| {
-        Command::new("git").current_dir(repo_path).args(args).output().unwrap();
+        Command::new("git")
+            .current_dir(repo_path)
+            .args(args)
+            .output()
+            .unwrap();
     };
     run(&["add", "."]);
     run(&["commit", "-m", "Initial commit"]);
@@ -101,7 +111,11 @@ fn test_regression_pytest_skip_marker_blocks() {
     fs::write(repo_path.join("tests/test_tax.py"), base_test).unwrap();
 
     let run = |args: &[&str]| {
-        Command::new("git").current_dir(repo_path).args(args).output().unwrap();
+        Command::new("git")
+            .current_dir(repo_path)
+            .args(args)
+            .output()
+            .unwrap();
     };
     run(&["add", "."]);
     run(&["commit", "-m", "Initial commit"]);
@@ -135,13 +149,18 @@ fn test_regression_skip_quarantine_routes_to_review() {
     fs::write(repo_path.join("tests/test_flaky.py"), base_test).unwrap();
 
     let run = |args: &[&str]| {
-        Command::new("git").current_dir(repo_path).args(args).output().unwrap();
+        Command::new("git")
+            .current_dir(repo_path)
+            .args(args)
+            .output()
+            .unwrap();
     };
     run(&["add", "."]);
     run(&["commit", "-m", "Initial commit"]);
 
     // Legitimate quarantine: human or agent skips flaky test without touching production
-    let quarantined_test = "@pytest.mark.skip(reason=\"flaky\")\ndef test_flaky():\n    assert ping() == True\n";
+    let quarantined_test =
+        "@pytest.mark.skip(reason=\"flaky\")\ndef test_flaky():\n    assert ping() == True\n";
     fs::write(repo_path.join("tests/test_flaky.py"), quarantined_test).unwrap();
 
     // Under --strict mode, routes to REVIEW (exit 1), not BLOCK (exit 2)
@@ -182,7 +201,11 @@ fn test_regression_jest_skip_blocks() {
     fs::write(repo_path.join("tests/billing.test.js"), base_test).unwrap();
 
     let run = |args: &[&str]| {
-        Command::new("git").current_dir(repo_path).args(args).output().unwrap();
+        Command::new("git")
+            .current_dir(repo_path)
+            .args(args)
+            .output()
+            .unwrap();
     };
     run(&["add", "."]);
     run(&["commit", "-m", "Initial commit"]);
@@ -216,7 +239,11 @@ fn test_regression_ci_semicolon_exit_zero_blocks() {
     fs::write(repo_path.join(".github/workflows/ci.yml"), base_ci).unwrap();
 
     let run = |args: &[&str]| {
-        Command::new("git").current_dir(repo_path).args(args).output().unwrap();
+        Command::new("git")
+            .current_dir(repo_path)
+            .args(args)
+            .output()
+            .unwrap();
     };
     run(&["add", "."]);
     run(&["commit", "-m", "Initial commit"]);
@@ -248,13 +275,18 @@ fn test_regression_jest_pass_with_no_tests_blocks() {
     fs::write(repo_path.join("jest.config.js"), base_cfg).unwrap();
 
     let run = |args: &[&str]| {
-        Command::new("git").current_dir(repo_path).args(args).output().unwrap();
+        Command::new("git")
+            .current_dir(repo_path)
+            .args(args)
+            .output()
+            .unwrap();
     };
     run(&["add", "."]);
     run(&["commit", "-m", "Initial commit"]);
 
     // Cheat: `passWithNoTests: true` added to jest.config.js
-    let cheated_cfg = "module.exports = {\n  testEnvironment: 'node',\n  passWithNoTests: true,\n};\n";
+    let cheated_cfg =
+        "module.exports = {\n  testEnvironment: 'node',\n  passWithNoTests: true,\n};\n";
     fs::write(repo_path.join("jest.config.js"), cheated_cfg).unwrap();
 
     let proctor_bin = env!("CARGO_BIN_EXE_proctor");

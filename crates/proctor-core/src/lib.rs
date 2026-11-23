@@ -14,10 +14,7 @@ pub enum Verdict {
         evidence: String,
     },
     /// Malicious or unjustifiable tampering (e.g. CI sabotage or shadow mocking of target).
-    Block {
-        rule: RuleId,
-        evidence: String,
-    },
+    Block { rule: RuleId, evidence: String },
 }
 
 impl Verdict {

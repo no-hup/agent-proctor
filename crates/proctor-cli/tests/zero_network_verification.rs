@@ -9,8 +9,8 @@ fn test_zero_network_dependencies_in_lockfile() {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     let lockfile_path = Path::new(manifest_dir).join("../../Cargo.lock");
 
-    let lock_content = fs::read_to_string(&lockfile_path)
-        .expect("Cargo.lock must exist at workspace root");
+    let lock_content =
+        fs::read_to_string(&lockfile_path).expect("Cargo.lock must exist at workspace root");
 
     // Forbidden networking and telemetry crates
     let forbidden_crates = [

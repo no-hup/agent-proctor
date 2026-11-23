@@ -1,4 +1,4 @@
-use crate::{ParsedAssertion, ParsedMock, ParsedTest, ParsedTestFile, ParsedSourceFile};
+use crate::{ParsedAssertion, ParsedMock, ParsedSourceFile, ParsedTest, ParsedTestFile};
 use proctor_core::{AssertionStrength, TestId};
 use tree_sitter::{Node, Parser};
 
@@ -19,7 +19,15 @@ pub fn parse_python_test_file(file_path: &str, source: &str) -> Result<ParsedTes
     let mut harness_mocks = Vec::new();
     let mut imports = Vec::new();
 
-    walk_python_test_nodes(root, source, file_path, &[], &mut tests, &mut harness_mocks, &mut imports);
+    walk_python_test_nodes(
+        root,
+        source,
+        file_path,
+        &[],
+        &mut tests,
+        &mut harness_mocks,
+        &mut imports,
+    );
 
     Ok(ParsedTestFile {
         file_path: file_path.to_string(),
@@ -47,7 +55,14 @@ pub fn parse_python_source_file(file_path: &str, source: &str) -> Result<ParsedS
     let mut string_literals = Vec::new();
     let mut symbol_bodies = std::collections::HashMap::new();
 
-    extract_source_symbols(root, source, false, &mut defined_symbols, &mut symbol_bodies, &mut string_literals);
+    extract_source_symbols(
+        root,
+        source,
+        false,
+        &mut defined_symbols,
+        &mut symbol_bodies,
+        &mut string_literals,
+    );
 
     Ok(ParsedSourceFile {
         file_path: file_path.to_string(),
@@ -80,7 +95,15 @@ fn walk_python_test_nodes(
                     let mut new_scope = scope.to_vec();
                     new_scope.push(class_name.to_string());
                     if let Some(body) = child.child_by_field_name("body") {
-                        walk_python_test_nodes(body, source, file_path, &new_scope, tests, harness_mocks, imports);
+                        walk_python_test_nodes(
+                            body,
+                            source,
+                            file_path,
+                            &new_scope,
+                            tests,
+                            harness_mocks,
+                            imports,
+                        );
                     }
                 }
             }
@@ -88,7 +111,8 @@ fn walk_python_test_nodes(
                 if let Some(name_node) = child.child_by_field_name("name") {
                     let fn_name = name_node.utf8_text(source.as_bytes()).unwrap_or("");
                     if fn_name.starts_with("test_") || fn_name.ends_with("_test") {
-                        let parsed_test = extract_python_test(child, source, file_path, scope, fn_name, false);
+                        let parsed_test =
+                            extract_python_test(child, source, file_path, scope, fn_name, false);
                         tests.push(parsed_test);
                     }
                 }
@@ -107,7 +131,9 @@ fn walk_python_test_nodes(
                         if let Some(name_node) = def_node.child_by_field_name("name") {
                             let fn_name = name_node.utf8_text(source.as_bytes()).unwrap_or("");
                             if fn_name.starts_with("test_") || fn_name.ends_with("_test") {
-                                let mut parsed_test = extract_python_test(def_node, source, file_path, scope, fn_name, is_skipped);
+                                let mut parsed_test = extract_python_test(
+                                    def_node, source, file_path, scope, fn_name, is_skipped,
+                                );
                                 parsed_test.parametrized_hashes = param_hashes;
                                 parsed_test.mocks.extend(decorator_mocks);
                                 tests.push(parsed_test);
@@ -164,7 +190,10 @@ fn extract_python_test(
         body_content_hash: u64::from_le_bytes(body_hash.as_bytes()[..8].try_into().unwrap()),
     };
 
-    if body_text.contains("pytest.skip(") || body_text.contains("self.skipTest(") || body_text.contains("unittest.skip(") {
+    if body_text.contains("pytest.skip(")
+        || body_text.contains("self.skipTest(")
+        || body_text.contains("unittest.skip(")
+    {
         is_skipped = true;
     }
 
@@ -223,7 +252,11 @@ fn extract_assertions_and_mocks(
 }
 
 fn parse_assert_statement(assert_node: Node, source: &str) -> Option<ParsedAssertion> {
-    let text = assert_node.utf8_text(source.as_bytes()).ok()?.trim().to_string();
+    let text = assert_node
+        .utf8_text(source.as_bytes())
+        .ok()?
+        .trim()
+        .to_string();
     let line = assert_node.start_position().row + 1;
 
     let mut referenced_symbols = Vec::new();
@@ -264,7 +297,10 @@ fn parse_assert_statement(assert_node: Node, source: &str) -> Option<ParsedAsser
                 }
             }
         } else if expr.kind() == "boolean_operator" {
-            if expr_text.contains("or True") || expr_text.contains("or 1") || expr_text.ends_with("or not False") {
+            if expr_text.contains("or True")
+                || expr_text.contains("or 1")
+                || expr_text.ends_with("or not False")
+            {
                 strength = AssertionStrength::Vacuous;
             } else {
                 strength = AssertionStrength::Weak;
@@ -286,7 +322,11 @@ fn parse_assert_statement(assert_node: Node, source: &str) -> Option<ParsedAsser
 }
 
 fn parse_unittest_call(call_node: Node, source: &str) -> Option<ParsedAssertion> {
-    let text = call_node.utf8_text(source.as_bytes()).ok()?.trim().to_string();
+    let text = call_node
+        .utf8_text(source.as_bytes())
+        .ok()?
+        .trim()
+        .to_string();
     let line = call_node.start_position().row + 1;
 
     let fn_child = call_node.child_by_field_name("function")?;
@@ -300,7 +340,10 @@ fn parse_unittest_call(call_node: Node, source: &str) -> Option<ParsedAssertion>
     let mut expected_literal = None;
     let strength;
 
-    if fn_text.ends_with("assertEqual") || fn_text.ends_with("assert_equal") || fn_text.ends_with("assertDictEqual") {
+    if fn_text.ends_with("assertEqual")
+        || fn_text.ends_with("assert_equal")
+        || fn_text.ends_with("assertDictEqual")
+    {
         strength = AssertionStrength::Exact;
         if let Some(args) = call_node.child_by_field_name("arguments") {
             if let Some(second_arg) = args.child(3) {
@@ -324,7 +367,11 @@ fn parse_unittest_call(call_node: Node, source: &str) -> Option<ParsedAssertion>
 }
 
 fn parse_pytest_raises(with_node: Node, source: &str) -> Option<ParsedAssertion> {
-    let text = with_node.utf8_text(source.as_bytes()).ok()?.trim().to_string();
+    let text = with_node
+        .utf8_text(source.as_bytes())
+        .ok()?
+        .trim()
+        .to_string();
     let line = with_node.start_position().row + 1;
 
     let mut referenced_symbols = Vec::new();
@@ -357,7 +404,13 @@ fn extract_identifiers_and_attrs(node: Node, source: &str, symbols: &mut Vec<Str
         match child.kind() {
             "identifier" => {
                 let name = child.utf8_text(source.as_bytes()).unwrap_or("");
-                if !name.is_empty() && name != "self" && name != "assert" && name != "None" && name != "True" && name != "False" {
+                if !name.is_empty()
+                    && name != "self"
+                    && name != "assert"
+                    && name != "None"
+                    && name != "True"
+                    && name != "False"
+                {
                     symbols.push(name.to_string());
                 }
             }
@@ -502,7 +555,10 @@ fn extract_source_symbols(
                     let name = name_node.utf8_text(source.as_bytes()).unwrap_or("");
                     if !name.is_empty() {
                         defined_symbols.push(name.to_string());
-                        let body = child.child_by_field_name("body").and_then(|b| b.utf8_text(source.as_bytes()).ok()).unwrap_or("");
+                        let body = child
+                            .child_by_field_name("body")
+                            .and_then(|b| b.utf8_text(source.as_bytes()).ok())
+                            .unwrap_or("");
                         crate::record_body(symbol_bodies, name, body);
                     }
                 }
@@ -512,7 +568,10 @@ fn extract_source_symbols(
                     let name = left.utf8_text(source.as_bytes()).unwrap_or("");
                     if !name.is_empty() {
                         defined_symbols.push(name.to_string());
-                        let body = child.child_by_field_name("right").and_then(|b| b.utf8_text(source.as_bytes()).ok()).unwrap_or("");
+                        let body = child
+                            .child_by_field_name("right")
+                            .and_then(|b| b.utf8_text(source.as_bytes()).ok())
+                            .unwrap_or("");
                         crate::record_body(symbol_bodies, name, body);
                     }
                 }
@@ -526,8 +585,16 @@ fn extract_source_symbols(
             }
             _ => {}
         }
-        let nested = in_function || child.kind() == "function_definition" || child.kind() == "lambda";
-        extract_source_symbols(child, source, nested, defined_symbols, symbol_bodies, string_literals);
+        let nested =
+            in_function || child.kind() == "function_definition" || child.kind() == "lambda";
+        extract_source_symbols(
+            child,
+            source,
+            nested,
+            defined_symbols,
+            symbol_bodies,
+            string_literals,
+        );
     }
 }
 
