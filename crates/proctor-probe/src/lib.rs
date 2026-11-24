@@ -8,7 +8,10 @@ pub mod verify;
 pub use mutant::{apply_mutant_with_sentinel, generate_mutants, generate_targeted_mutants, Mutant};
 pub use runner::{execute_probe_run, ProbeOutcome};
 pub use sandbox::WorktreeGuard;
-pub use verify::{verify_tests, RunnerType, TestVerificationResult, VerificationStatus};
+pub use verify::{
+    verify_tests, verify_tests_with_timeout, RunnerType, TestVerificationResult,
+    VerificationStatus, VerifyTarget,
+};
 
 use anyhow::Result;
 use proctor_core::{Finding, RuleId, RuleTier, Verdict};

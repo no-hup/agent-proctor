@@ -431,7 +431,7 @@ pub fn print_verification_results(results: &[proctor_probe::TestVerificationResu
     if results.is_empty() {
         println!(
             "\n{}",
-            "ℹ️ proctor verify: No changed test files found to verify.".dimmed()
+            "ℹ️ proctor verify: No changed tests found to verify.".dimmed()
         );
         return;
     }
@@ -439,75 +439,79 @@ pub fn print_verification_results(results: &[proctor_probe::TestVerificationResu
     println!("\n{}", "─".repeat(70).dimmed());
     println!(
         "{}",
-        "🧪 proctor verify: Dynamic Regression Verification"
+        "🧪 proctor verify: Dynamic Regression Verification (experimental)"
             .bold()
             .cyan()
     );
     println!("{}\n", "─".repeat(70).dimmed());
 
-    let mut verified = 0;
-    let mut trivial = 0;
-    let mut tautology = 0;
+    let mut discriminating = 0;
+    let mut missing = 0;
+    let mut non_discriminating = 0;
+    let mut broken = 0;
     let mut inconclusive = 0;
 
     for r in results {
         match &r.status {
-            VerificationStatus::VerifiedRegression { reason } => {
-                verified += 1;
-                println!("  {} {}", "🛡️ VERIFIED".bold().green(), r.test_file.bold());
-                println!("    Runner  : {} ({}ms)", r.runner.cyan(), r.duration_ms);
+            VerificationStatus::Discriminating { reason } => {
+                discriminating += 1;
                 println!(
-                    "    Status  : Failed on base with expected assertion error (proven bugfix)"
+                    "  {} {}",
+                    "🛡️ DISCRIMINATING".bold().green(),
+                    r.test_id.bold()
                 );
+                println!("    Runner  : {} ({}ms)", r.runner.cyan(), r.duration_ms);
+                println!("    Status  : Passed 2x on head, failed 2x on base with assertion error");
                 println!("    Details : {}\n", reason.dimmed());
             }
-            VerificationStatus::TriviallyRed { error } => {
-                trivial += 1;
+            VerificationStatus::MissingOnBase { error } => {
+                missing += 1;
                 println!(
                     "  {} {}",
-                    "⚠️  TRIVIALLY RED".bold().yellow(),
-                    r.test_file.bold()
+                    "⚠️  MISSING ON BASE".bold().yellow(),
+                    r.test_id.bold()
                 );
                 println!("    Runner  : {} ({}ms)", r.runner.cyan(), r.duration_ms);
-                println!("    Status  : Failed on base due to missing symbol/module");
+                println!("    Status  : Passed on head, failed on base with missing symbol/module");
                 println!("    Details : {}\n", error.dimmed());
             }
-            VerificationStatus::Tautology => {
-                tautology += 1;
+            VerificationStatus::DoesNotDiscriminate => {
+                non_discriminating += 1;
                 println!(
                     "  {} {}",
-                    "⚪ TAUTOLOGY".bold().dimmed(),
-                    r.test_file.bold()
+                    "⚪ DOES NOT DISCRIMINATE".bold().dimmed(),
+                    r.test_id.bold()
                 );
                 println!("    Runner  : {} ({}ms)", r.runner.cyan(), r.duration_ms);
-                println!("    Status  : Passed on base without the PR code changes (non-discriminating)\n");
+                println!("    Status  : Passed on both head and base\n");
+            }
+            VerificationStatus::Broken { error } => {
+                broken += 1;
+                println!("  {} {}", "❌ BROKEN".bold().red(), r.test_id.bold());
+                println!("    Runner  : {} ({}ms)", r.runner.cyan(), r.duration_ms);
+                println!("    Status  : Failed on head revision");
+                println!("    Details : {}\n", error.red());
             }
             VerificationStatus::Inconclusive { reason } => {
                 inconclusive += 1;
                 println!(
                     "  {} {}",
                     "ℹ️  INCONCLUSIVE".bold().blue(),
-                    r.test_file.bold()
+                    r.test_id.bold()
                 );
                 println!("    Runner  : {} ({}ms)", r.runner.cyan(), r.duration_ms);
                 println!("    Reason  : {}\n", reason.dimmed());
-            }
-            VerificationStatus::ExecutionError { error } => {
-                println!("  {} {}", "❌ ERROR".bold().red(), r.test_file.bold());
-                println!("    Runner  : {} ({}ms)", r.runner.cyan(), r.duration_ms);
-                println!("    Details : {}\n", error.red());
             }
         }
     }
 
     println!("{}", "─".repeat(70).dimmed());
     println!(
-        "Summary: {} verified regression{}, {} trivially red, {} tautolog{}, {} inconclusive",
-        verified.to_string().green().bold(),
-        if verified == 1 { "" } else { "s" },
-        trivial.to_string().yellow(),
-        tautology,
-        if tautology == 1 { "y" } else { "ies" },
+        "Summary: {} discriminating, {} missing on base, {} does not discriminate, {} broken, {} inconclusive",
+        discriminating.to_string().green().bold(),
+        missing.to_string().yellow(),
+        non_discriminating,
+        broken.to_string().red(),
         inconclusive
     );
     println!("{}\n", "─".repeat(70).dimmed());
@@ -517,39 +521,47 @@ pub fn render_verification_receipt(results: &[proctor_probe::TestVerificationRes
     use proctor_probe::VerificationStatus;
 
     if results.is_empty() {
-        return "### 🧪 Dynamic Test Verification Receipt (agent-proctor)\n\nNo changed test files were verified.\n".to_string();
+        return "### 🧪 Dynamic Test Verification Receipt (experimental)\n\nNo changed tests were verified.\n".to_string();
     }
 
-    let mut out = String::from("### 🧪 Dynamic Test Verification Receipt (agent-proctor)\n\n");
-    out += "| Test File | Verdict | Details | Runner | Duration |\n";
+    let mut out = String::from("### 🧪 Dynamic Test Verification Receipt (experimental)\n\n");
+    out += "| Test | Verdict | Details | Runner | Duration |\n";
     out += "|---|---|---|---|---|\n";
 
-    let mut verified = 0;
-    let mut trivial = 0;
-    let mut tautology = 0;
+    let mut discriminating = 0;
+    let mut missing = 0;
+    let mut non_discriminating = 0;
+    let mut broken = 0;
     let mut inconclusive = 0;
 
     for r in results {
         let (verdict_str, details_str) = match &r.status {
-            VerificationStatus::VerifiedRegression { reason } => {
-                verified += 1;
+            VerificationStatus::Discriminating { reason } => {
+                discriminating += 1;
                 (
-                    "🛡️ **Verified Regression**",
+                    "🛡️ **Discriminating**",
                     reason.replace('|', "\\|").replace('\n', " "),
                 )
             }
-            VerificationStatus::TriviallyRed { error } => {
-                trivial += 1;
+            VerificationStatus::MissingOnBase { error } => {
+                missing += 1;
                 (
-                    "⚠️ **Trivially Red**",
+                    "⚠️ **Missing on base**",
                     error.replace('|', "\\|").replace('\n', " "),
                 )
             }
-            VerificationStatus::Tautology => {
-                tautology += 1;
+            VerificationStatus::DoesNotDiscriminate => {
+                non_discriminating += 1;
                 (
-                    "⚪ **Tautology**",
-                    "Passed on base code (does not exercise change)".to_string(),
+                    "⚪ **Does not discriminate**",
+                    "Passed on both head and base".to_string(),
+                )
+            }
+            VerificationStatus::Broken { error } => {
+                broken += 1;
+                (
+                    "❌ **Broken**",
+                    error.replace('|', "\\|").replace('\n', " "),
                 )
             }
             VerificationStatus::Inconclusive { reason } => {
@@ -559,38 +571,38 @@ pub fn render_verification_receipt(results: &[proctor_probe::TestVerificationRes
                     reason.replace('|', "\\|").replace('\n', " "),
                 )
             }
-            VerificationStatus::ExecutionError { error } => {
-                ("❌ **Error**", error.replace('|', "\\|").replace('\n', " "))
-            }
         };
 
         out += &format!(
             "| `{}` | {} | {} | `{}` | {}ms |\n",
-            r.test_file, verdict_str, details_str, r.runner, r.duration_ms
+            r.test_id, verdict_str, details_str, r.runner, r.duration_ms
         );
     }
 
     out += "\n**Verification Summary:**\n";
     out += &format!(
-        "- 🛡️ **Verified Regression Tests:** {} (proven to catch bugs)\n",
-        verified
+        "- 🛡️ **Discriminating:** {} (passed 2x on head, failed 2x on base with assertion failure)\n",
+        discriminating
     );
     out += &format!(
-        "- ⚠️ **Trivially Red Tests:** {} (missing symbols on base)\n",
-        trivial
+        "- ⚠️ **Missing on base:** {} (import or missing-symbol error on base)\n",
+        missing
     );
     out += &format!(
-        "- ⚪ **Tautological Tests:** {} (already passed on base)\n",
-        tautology
+        "- ⚪ **Does not discriminate:** {} (passed on both head and base)\n",
+        non_discriminating
     );
+    if broken > 0 {
+        out += &format!("- ❌ **Broken:** {} (failed on head)\n", broken);
+    }
     if inconclusive > 0 {
         out += &format!(
-            "- ℹ️ **Inconclusive Tests:** {} (external network/db requirements)\n",
+            "- ℹ️ **Inconclusive:** {} (timeout, flaky, dependency change, or setup crash)\n",
             inconclusive
         );
     }
 
-    out += "\n<sub>Tests were checked out against the base commit in an ephemeral isolated git worktree.</sub>\n";
+    out += "\n<sub>Verified via inverted file swap in the host checkout using structured runner outputs; dynamic verification results do not change the static scan exit code.</sub>\n";
     out
 }
 

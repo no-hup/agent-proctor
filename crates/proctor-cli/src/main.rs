@@ -338,37 +338,37 @@ fn run_scan(
         }
     }
 
-    // 5c. Optional dynamic verification
+    // 5c. Optional dynamic verification (never alters scan exit code)
     if verify {
-        println!("proctor: Running dynamic regression verification in ephemeral worktree...");
-        let mut test_files_set = std::collections::BTreeSet::new();
-        for t in &diff.new_tests {
-            test_files_set.insert(t.id.file_path.clone());
-        }
-        for p in &diff.paired_tests {
-            test_files_set.insert(p.head_test.id.file_path.clone());
-        }
-        let changed_test_files: Vec<String> = test_files_set.into_iter().collect();
-        if let Ok(verify_results) = proctor_probe::verify_tests(
+        println!("proctor: Running dynamic regression verification...");
+        let targets = extract_verify_targets(&diff);
+        let changed_paths_hint = collect_changed_paths_from_diff(&diff);
+        match proctor_probe::verify_tests(
             Path::new("."),
             base,
             head,
             proctor_probe::RunnerType::Auto,
-            &changed_test_files,
+            &targets,
+            &changed_paths_hint,
         ) {
-            reporter::print_verification_results(&verify_results);
-            if let Some(path) = &receipt_path {
-                if let Ok(mut file) = std::fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(path)
-                {
-                    let _ = writeln!(
-                        file,
-                        "\n{}",
-                        reporter::render_verification_receipt(&verify_results)
-                    );
+            Ok(verify_results) => {
+                reporter::print_verification_results(&verify_results);
+                if let Some(path) = &receipt_path {
+                    if let Ok(mut file) = std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(path)
+                    {
+                        let _ = writeln!(
+                            file,
+                            "\n{}",
+                            reporter::render_verification_receipt(&verify_results)
+                        );
+                    }
                 }
+            }
+            Err(e) => {
+                eprintln!("proctor: warning: dynamic verification skipped ({})", e);
             }
         }
     }
@@ -457,6 +457,50 @@ fn run_scan(
     }
 }
 
+fn extract_verify_targets(diff: &SemanticDiff) -> Vec<proctor_probe::VerifyTarget> {
+    let mut targets = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    for t in &diff.new_tests {
+        let target = proctor_probe::VerifyTarget {
+            file_path: t.id.file_path.clone(),
+            scope_hierarchy: t.id.scope_hierarchy.clone(),
+            test_name: t.id.name.clone(),
+        };
+        if seen.insert(target.canonical_id()) {
+            targets.push(target);
+        }
+    }
+
+    for p in diff
+        .paired_tests
+        .iter()
+        .filter(|p| p.base_test.id.body_content_hash != p.head_test.id.body_content_hash)
+    {
+        let target = proctor_probe::VerifyTarget {
+            file_path: p.head_test.id.file_path.clone(),
+            scope_hierarchy: p.head_test.id.scope_hierarchy.clone(),
+            test_name: p.head_test.id.name.clone(),
+        };
+        if seen.insert(target.canonical_id()) {
+            targets.push(target);
+        }
+    }
+
+    targets
+}
+
+fn collect_changed_paths_from_diff(diff: &SemanticDiff) -> Vec<String> {
+    let mut paths = std::collections::BTreeSet::new();
+    for p in diff.raw_base_files.keys() {
+        paths.insert(p.clone());
+    }
+    for p in diff.raw_head_files.keys() {
+        paths.insert(p.clone());
+    }
+    paths.into_iter().collect()
+}
+
 fn run_verify(
     base: &str,
     head: Option<&str>,
@@ -487,22 +531,15 @@ fn run_verify(
     let diff = SemanticDiff::build(&changed.base_files, &changed.head_files)
         .map_err(|e| anyhow::anyhow!("Semantic diff failed: {}", e))?;
 
-    let mut test_files_set = std::collections::BTreeSet::new();
-    for t in &diff.new_tests {
-        test_files_set.insert(t.id.file_path.clone());
-    }
-    for p in &diff.paired_tests {
-        test_files_set.insert(p.head_test.id.file_path.clone());
-    }
+    let targets = extract_verify_targets(&diff);
+    let changed_paths_hint = collect_changed_paths_from_diff(&diff);
 
-    let changed_test_files: Vec<String> = test_files_set.into_iter().collect();
-
-    if changed_test_files.is_empty() {
+    if targets.is_empty() {
         if format == OutputFormat::Json {
             println!("[]");
         } else {
             println!(
-                "proctor verify: No changed test files detected between {} and HEAD.",
+                "proctor verify: No added or modified tests detected between {} and HEAD.",
                 base
             );
         }
@@ -510,11 +547,17 @@ fn run_verify(
     }
 
     println!(
-        "proctor verify: Running dynamic regression verification on {} test file(s)...",
-        changed_test_files.len()
+        "proctor verify: Running dynamic regression verification on {} test(s)...",
+        targets.len()
     );
-    let results =
-        proctor_probe::verify_tests(repo_root, base, head, runner.into(), &changed_test_files)?;
+    let results = proctor_probe::verify_tests(
+        repo_root,
+        base,
+        head,
+        runner.into(),
+        &targets,
+        &changed_paths_hint,
+    )?;
 
     match format {
         OutputFormat::Json => {
