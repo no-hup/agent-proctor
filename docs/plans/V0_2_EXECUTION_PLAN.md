@@ -180,21 +180,19 @@
 
 ---
 
-## Phase 7: Release `v0.2.0` & Maintainer Outreach Relaunch
+## Phase 7: Release `v0.2.2` & Maintainer Outreach Relaunch
 
 *Goal: Release the calibrated engine and re-engage maintainers with value-first PR receipts.*
 
 ### Tasks:
-- [ ] **Task 7.1: Tag & Publish `v0.2.0`**
-  - Bump Cargo versions across all 6 crates to `0.2.0`.
+- [x] **Task 7.1: Tag & Publish `v0.2.2`**
+  - Bump Cargo versions across all 6 crates to `0.2.2`.
   - Build release binaries for `darwin-aarch64`, `darwin-x86_64`, `linux-aarch64`, `linux-x86_64`.
-  - Update `no-hup/proctor-action` tag `v1` and release `v0.2.0`.
+  - Release `v0.2.2` and sync `no-hup/proctor-action` tag `v1`.
 - [ ] **Task 7.2: Calibrated Follow-Ups to Graham (OpenHands) and Krrish (LiteLLM)**
-  - Send the calibrated follow-up note admitting previous noise, explaining the new definition-linkage engine, and presenting the updated, accurate precision numbers.
+  - Drafted in `docs/outreach/BATCH_2_DRAFTS.md` (awaiting user approval): admits previous `.tsx`/`with` noise, links `V0_1_VS_V0_2_COMPARISON.md`, includes verified clean `v0.2.2` PR receipts.
 - [ ] **Task 7.3: Relaunch Batch 2 Outreach (Flattering PR Receipts)**
-  - For `browser-use`, `claude-flow`, `cline`, and other targets:
-  - Do NOT send an accusatory cold email.
-  - Send: *"We ran Proctor over your last 5 merged PRs and generated these verified Test-Change Receipts showing that your recent PRs added 100% verified regression tests. Here is how to keep this receipt automatic in CI."*
+  - Drafted in `docs/outreach/BATCH_2_DRAFTS.md` (awaiting user approval) using non-blocking Observe Mode (`enforce: false`) + opt-in `proctor verify` framing.
 
 ---
 

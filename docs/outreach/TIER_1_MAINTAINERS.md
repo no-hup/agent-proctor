@@ -1,71 +1,71 @@
 # Tier 1 Open Source Maintainer Outreach Playbook
 
-This playbook provides targeted, respectful, engineer-to-engineer outreach templates for non-AI open source maintainers currently experiencing drive-by AI PR fatigue.
+This playbook provides respectful, engineer-to-engineer outreach templates built around **Observe Mode Test-Change Receipts** and opt-in **`proctor verify`**.
 
 ---
 
-## The Value Proposition to Maintainers
+## Core Outreach Invariants
 
-1. **The Core Pain:** Maintainers waste 20–30 minutes reviewing AI-assisted PRs that appear green in CI, only to find the author/agent commented out failing tests or weakened assertions.
-2. **The Zero-Risk Test:** Offer to run Proctor in **Shadow / Advisory Mode** (`strict: false` or advisory comment). It never blocks builds; it just flags assertion modifications.
-3. **Privacy & Freedom:** 100% Free for Open Source, zero LLM calls, zero telemetry (binary executes entirely on their GitHub runner).
+1. **Lead with a concrete, flattering PR receipt:** Run `v0.2.2` against recent merged PRs from their repo and attach a real green `Test-Change Receipt` (never lead by accusing a maintainer of weak tests).
+2. **Pitch Observe Mode (`enforce: false`) first:** Static AST rules still catch legitimate test maintenance (~43–46% Guard reviewer attention on historical human commits), so CI blocking should always be opt-in.
+3. **Zero unsolicited PRs or issues:** Reach out via direct email or X/Twitter DM first.
+4. **Honest & verifiable:** Every release tarball under `no-hup/agent-proctor/releases` ships with a `.sha256` checksum, zero network libraries (`test_zero_network_dependencies_in_lockfile`), and read-only permissions.
 
 ---
 
 ## Outreach Templates
 
-### Template A: Twitter/X / DM / Email (Short, High-Converting)
+### Template A: Follow-Up Calibration Note (Previous Early Outreach)
 
-> **Subject:** Quick anticheat action to block AI PRs that delete tests
+> **Subject:** fixed the noisy TSX / context-manager flags in agent-proctor (v0.2.2)
 >
 > Hey [Name],
 >
-> Saw your post about the flood of low-effort AI PRs hitting [Repo Name]. One recurring pattern we noticed across public repos is agents getting green CI by silently weakening assertions or deleting test cases when they hit a tough edge case.
+> Quick follow-up—earlier I shared `v0.1.0` audit numbers for `[Repo]` that turned out to have a lot of false positives (our TypeScript `.tsx` parser choked on `typeof import(...)` and Python context managers like `with wire_server():` triggered assertion alerts).
 >
-> We built `proctor`—a deterministic, sub-50ms Tree-sitter GitHub Action that catches assertion weakenings and test tampering in git diffs (zero LLMs, zero telemetry, runs locally on your runner).
+> We fixed those parsers and added definition-linkage calibration in **`v0.2.2`**, plus shifted the core pitch from "auto-blocking CI" to **Test-Change Receipts** in GitHub Step Summaries + opt-in `proctor verify` (running added tests against `base` to confirm reproduction):
 >
-> It’s free for open source. If you're open to it, could we set it up in **advisory/shadow mode** on [Repo Name] for 5 days? It won't fail any PRs; it just leaves a quiet annotation if an agent modifies your test harness.
+> [Paste real clean v0.2.2 receipt from a recent merged PR in their repo]
 >
-> Happy to send over the 5-line YAML if you'd like to try it.
+> Re-running the same 100-commit replay on `[Repo]` moved clean passes from `[old]` -> **`[new]`** (full methodology + hand-labeled precision numbers—including where static heuristics still flag ~43–46% legitimate maintenance so `enforce: false` stays default—are in `docs/audit/V0_1_VS_V0_2_COMPARISON.md`).
+>
+> Happy to share the 5-line Observe Mode YAML if you'd like automatic PR receipts on `$GITHUB_STEP_SUMMARY`, otherwise won't bug you again!
 >
 > Best,  
-> Shaurya
+> Shaurya  
+> https://github.com/no-hup/agent-proctor
 
 ---
 
-### Template B: GitHub Discussion / Issue Note
+### Template B: Cold Value-First Outreach (Direct Email / X DM)
 
-> **Title:** Deterministic protection against AI PRs that weaken test assertions
+> **Subject:** Test-Change Receipts for `[Repo]` PRs (zero-egress, non-blocking)
 >
-> Hi [Maintainer Name],
+> Hey [Name],
 >
-> Like many popular repositories, [Repo Name] has likely seen an increase in AI-assisted PRs that claim to fix an issue but secretly tweak tests to pass CI.
+> With AI coding PRs ramping up across open-source repos, one annoying time-sink in review is figuring out *what* a PR changed inside `tests/`—whether new tests assert exact values, existing assertions got weakened, or internal code got mocked out.
 >
-> We built `agent-proctor` to solve this at the git PR boundary:
-> * Uses Tree-sitter AST diffing to detect assertion weakening, test case deletion, shadow mocks, and CI sabotage (`|| true`).
-> * Sub-50ms execution, runs 100% locally on your GitHub runner (zero LLMs, zero telemetry).
-> * Free for all open-source projects.
+> I built **`agent-proctor`** (Apache-2.0, Rust, zero network libraries): it posts a compact **Test-Change Receipt** to `$GITHUB_STEP_SUMMARY` in **Observe Mode (`enforce: false`)** so builds never block, plus an optional `proctor verify` mode that executes new/edited tests on `base` to prove they actually fail before the fix.
 >
-> You can drop it into `.github/workflows/proctor.yml` in advisory mode:
-> ```yaml
-> - uses: no-hup/proctor-action@v1
->   with:
->     base-ref: ${{ github.event.pull_request.base.sha }}
->     head-ref: ${{ github.event.pull_request.head.sha }}
-> ```
-> Under default mode, it only emits advisory warnings and will not block human contributors.
+> Ran `v0.2.2` against recent merged commits on `[Repo]` (e.g., `[commit/PR]`):
 >
-> Let us know if you find it helpful or if you'd like any custom rules for [Repo Name]!
+> [Paste clean v0.2.2 Test-Change Receipt]
+>
+> If adding an automatic summary table to PRs sounds useful, it's 5 lines via `no-hup/proctor-action@v1` (read-only permissions, runs completely locally on your runner). Happy to share details or stay out of your hair—either way, congrats on `[recent milestone]`.
+>
+> Best,  
+> Shaurya  
+> https://github.com/no-hup/agent-proctor
 
 ---
 
-## Target Candidates (Non-AI Repos Flooded with PRs)
+## Target Candidates (Python / TypeScript Repos)
 
-| Project | Maintainer | Primary Language | Why They Are Ideal |
+| Project | Maintainer | Primary Language | Why They Are Relevant |
 | :--- | :--- | :--- | :--- |
-| **Textual / Rich** | Will McGugan | Python | Highly vocal about AI PR review fatigue; rigorous test suite. |
-| **Pydantic** | Samuel Colvin / Team | Python | Massive volume of community PRs; strict type-driven testing. |
-| **FastAPI** | Sebastián Ramírez (tiangolo) | Python | Hundreds of drive-by PRs; high community engagement. |
-| **Celery** | Omer Katz / Project team | Python | Complex distributed test suite; often broken by subtle test skips. |
-| **HTTPX / Encode** | Tom Christie / Florimond | Python | High reliability standards; zero tolerance for weakened assertions. |
-| **Zod / tRPC** | Colin McDonnell / Alex | TypeScript | Strict type assertions; AI PRs frequently relax checks. |
+| **browser-use** | Gregor Žunič (`@gregpr07`) | Python | High PR velocity (`9afbc07e` clean receipt verified) |
+| **Textual / Rich** | Will McGugan | Python | Rigorous test suite; vocal about PR review load |
+| **Pydantic** | Samuel Colvin / Team | Python | Large community PR volume; strict type & behavior tests |
+| **FastAPI** | Sebastián Ramírez (`tiangolo`) | Python | High volume of community & agent-assisted PRs |
+| **HTTPX / Encode** | Tom Christie / Team | Python | Strict contract testing |
+| **Zod / tRPC** | Colin McDonnell / Alex | TypeScript | `.tsx`/TS contract assertions |
