@@ -16,8 +16,8 @@ mod sarif;
     name = "proctor",
     author = "The Proctor Team",
     version = env!("CARGO_PKG_VERSION"),
-    about = "Deterministic PR integrity and anticheat gate for autonomous AI coding agents",
-    long_about = "proctor prevents specification gaming (assertion demolition, shadow mocking, and CI workflow sabotage) by autonomous coding agents like Devin, Claude Code, and Cursor."
+    about = "Prove PR tests catch the bug on base and keep existing test guarantees intact — zero-egress, deterministic",
+    long_about = "proctor runs your added or modified tests against both head and base commits to prove bug reproduction, and checks diffs deterministically so existing test assertions and configs stay intact."
 )]
 struct Cli {
     #[command(subcommand)]

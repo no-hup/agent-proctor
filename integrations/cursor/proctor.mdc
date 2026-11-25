@@ -1,0 +1,11 @@
+---
+description: Verify that added or modified tests reproduce the bug on base and pass on head before finishing
+globs:
+alwaysApply: true
+---
+
+Before declaring a bugfix or feature task finished:
+1. Ensure tests you added or modified actually test your change by running:
+   `proctor verify --base main` (or `proctor verify --base HEAD` for uncommitted changes).
+2. Confirm every new regression test reports `Discriminating` (fails on base, passes on your fix) and zero tests report `Broken` or `DoesNotDiscriminate`.
+3. Run `proctor scan --base main` to verify existing test contracts remain intact.

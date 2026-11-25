@@ -292,14 +292,14 @@ fn test_cli_version_and_audit_smoke() {
     let out_version = Command::new(proctor_bin).arg("version").output().unwrap();
     assert!(out_version.status.success());
     let stdout_version = String::from_utf8_lossy(&out_version.stdout);
-    assert!(stdout_version.contains("v0.2.0"));
+    assert!(stdout_version.contains(&format!("v{}", env!("CARGO_PKG_VERSION"))));
     assert!(stdout_version.contains("Tree-sitter"));
 
     // Test `proctor --version`
     let out_flag = Command::new(proctor_bin).arg("--version").output().unwrap();
     assert!(out_flag.status.success());
     let stdout_flag = String::from_utf8_lossy(&out_flag.stdout);
-    assert!(stdout_flag.contains("0.2.0"));
+    assert!(stdout_flag.contains(env!("CARGO_PKG_VERSION")));
 
     // Test `proctor audit --limit 1`
     let temp_dir = tempfile::tempdir().unwrap();

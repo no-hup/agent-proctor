@@ -17,6 +17,12 @@ Verified with compiled release binary (`agent-proctor` commit `58440fc`) against
 | **Real Jest (`npm install jest`)** | `tests/calc.test.js::discriminating test` | `Discriminating` | `Discriminating` (`expect(received).toBe(expected)`) | ✅ |
 | **Real Jest (`npm install jest`)** | `tests/calc.test.js::non discriminating test` | `DoesNotDiscriminate` | `DoesNotDiscriminate` | ✅ |
 | **Real Jest (`npm install jest`)** | `tests/calc.test.js::broken test` | `Broken` | `Broken` (`expect(received).toBe(expected)`) | ✅ |
+| **Live Vitest (`npm install vitest`)** | `tests/calc.test.js::discriminating vitest` | `Discriminating` | `Discriminating` (`AssertionError: expected -1 to be 5`) | ✅ |
+| **Live Vitest (`npm install vitest`)** | `tests/calc.test.js::non discriminating vitest` | `DoesNotDiscriminate` | `DoesNotDiscriminate` | ✅ |
+| **Live Vitest (`npm install vitest`)** | `tests/calc.test.js::broken vitest` | `Broken` | `Broken` (`AssertionError: expected 5 to be 99`) | ✅ |
+| **Crash Isolation (`pytest`)** | `TypeError` & `KeyError` on base | `Inconclusive` | `Inconclusive` (`Non-assertion failure on base`) | ✅ |
+| **Crash Isolation (`jest`)** | `TypeError` on base | `Inconclusive` | `Inconclusive` (`Non-assertion failure on base`) | ✅ |
+| **Crash Isolation (`vitest`)** | `TypeError` on base | `Inconclusive` | `Inconclusive` (`Non-assertion failure on base`) | ✅ |
 
 ---
 
