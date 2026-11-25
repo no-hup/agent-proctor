@@ -101,6 +101,14 @@ enum Commands {
         /// Restore working tree files from an interrupted verify swap backup (.git/proctor-swap-backup.json)
         #[arg(long)]
         restore: bool,
+
+        /// Force --restore even if files were modified after an interrupted swap
+        #[arg(long)]
+        force: bool,
+
+        /// Maximum number of added/modified test targets to execute per run
+        #[arg(long, default_value_t = 25)]
+        max_tests: usize,
     },
     /// Run ephemeral mutation probe in an isolated git worktree
     Probe {
@@ -214,6 +222,8 @@ fn main() -> Result<()> {
             format,
             receipt,
             restore,
+            force,
+            max_tests,
         }) => run_verify(
             &base,
             head.as_deref(),
@@ -221,6 +231,8 @@ fn main() -> Result<()> {
             format,
             receipt.as_deref(),
             restore,
+            force,
+            max_tests,
         ),
         Some(Commands::Probe {
             base,
@@ -513,6 +525,7 @@ fn collect_changed_paths_from_diff(diff: &SemanticDiff) -> Vec<String> {
     paths.into_iter().collect()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_verify(
     base: &str,
     head: Option<&str>,
@@ -520,10 +533,12 @@ fn run_verify(
     format: OutputFormat,
     receipt_path: Option<&Path>,
     restore: bool,
+    force: bool,
+    max_tests: usize,
 ) -> Result<()> {
     let repo_root = Path::new(".");
     if restore {
-        let count = proctor_probe::restore_swap_backup(repo_root)?;
+        let count = proctor_probe::restore_swap_backup(repo_root, force)?;
         if count == 0 {
             println!("proctor verify: No pending swap backup found.");
         } else {
@@ -576,13 +591,15 @@ fn run_verify(
         "proctor verify: Running dynamic regression verification on {} test(s)...",
         targets.len()
     );
-    let results = proctor_probe::verify_tests(
+    let results = proctor_probe::verify_tests_with_options(
         repo_root,
         base,
         head,
         runner.into(),
         &targets,
         &changed_paths_hint,
+        std::time::Duration::from_secs(20),
+        max_tests,
     )?;
 
     match format {

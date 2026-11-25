@@ -1,11 +1,11 @@
 ---
-description: Verify that added or modified tests reproduce the bug on base and pass on head before finishing
+description: Verify that behavior-change tests catch the change on base and keep existing test guarantees intact
 globs:
 alwaysApply: true
 ---
 
-Before declaring a bugfix or feature task finished:
-1. Ensure tests you added or modified actually test your change by running:
-   `proctor verify --base main` (or `proctor verify --base HEAD` for uncommitted changes).
-2. Confirm every new regression test reports `Discriminating` (fails on base, passes on your fix) and zero tests report `Broken` or `DoesNotDiscriminate`.
-3. Run `proctor scan --base main` to verify existing test contracts remain intact.
+Before finishing a task:
+1. Run `proctor verify --base main` (or `proctor verify --base HEAD` for uncommitted changes).
+2. Fix any tests marked `Broken` (failing on your current branch).
+3. Tests marked `Passes on both` (`DoesNotDiscriminate` in JSON) are expected for refactor or coverage tests — only check/tighten them if the test is meant to verify a specific behavior change.
+4. Run `proctor scan --base main` to confirm existing test assertions and runner configurations remain intact.

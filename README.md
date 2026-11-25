@@ -15,11 +15,11 @@ When a bugfix PR (whether written by a teammate or a coding agent like Claude Co
 1. **Does the new test actually catch the bug?** Or would it pass even on `main` without the fix?
 2. **Did existing tests stay just as strong?** Or did assertions get loosened, mocked out, skipped, or runner configs relaxed?
 
-`proctor` answers both deterministically with zero LLMs and zero network calls.
+`proctor` answers both cleanly with zero LLMs and zero network calls: static diff checks are deterministic (`<200ms`), and `verify` runs real tests repeatedly (`2x head`, `2x base`) to filter out flakes.
 
 ---
 
-## 1. Prove Tests Catch the Bug (`proctor verify` — Experimental)
+## 1. Check Whether Tests Catch the Change (`proctor verify` — Experimental)
 
 `proctor verify` temporarily swaps your modified production files back to the base commit (preserving your existing `.venv`, editable installs, and `node_modules`), runs your new and edited tests twice on `head` and twice on `base` using structured `--junitxml` / `--json` outputs, and restores the working tree cleanly:
 
@@ -27,25 +27,25 @@ When a bugfix PR (whether written by a teammate or a coding agent like Claude Co
 proctor verify --base main
 ```
 
-Every changed test gets a concrete verdict:
+Every changed test gets a clear label (JSON enum names shown in parentheses):
 
-- **`Discriminating`**: Passed 2x on `head` and failed 2x on `base` with an assertion failure — proves the fix.
-- **`DoesNotDiscriminate`**: Passed on both `head` and `base` — your test doesn't exercise the change.
-- **`MissingOnBase`**: Passed on `head` and failed on `base` because the symbol/module didn't exist yet.
-- **`Broken`**: Fails on your own `head` branch.
-- **`Inconclusive`**: Timed out, flaky, dependency manifest changed, setup/type error on base, or missing runner (never blocks CI unexpectedly).
+- **Catches change (`Discriminating`)**: Passed 2x on `head` and failed 2x on `base` with an assertion failure — shows the test catches your change.
+- **Passes on both (`DoesNotDiscriminate`)**: Passed on both `head` and `base` — expected for refactor or coverage tests; worth reviewing if testing a bugfix.
+- **Missing on base (`MissingOnBase`)**: Passed on `head` and failed on `base` because the symbol/module didn't exist yet.
+- **Broken (`Broken`)**: Fails on your own `head` branch.
+- **Inconclusive (`Inconclusive`)**: Timed out, flaky, dependency manifest changed, setup/type error on base, or missing runner (never blocks CI unexpectedly).
 
-If a run is killed mid-swap (`SIGINT`/`SIGKILL`), `proctor verify --restore` recovers every file from `.git/proctor-swap-backup.json`.
+If a run is killed mid-swap (`SIGINT`/`SIGKILL`), `proctor verify --restore` verifies no post-crash edits would be clobbered and recovers files from `.git/proctor-swap-backup.json`.
 
 ---
 
 ## 2. Run Inside Your Coding Agent Loop
 
-Stop discovering weak or non-discriminating tests at PR review time. Drop `proctor` into your local agent workflow so the agent proves its own tests before saying "done":
+Run `proctor` locally before declaring a task done:
 
-- **Claude Code Hook:** Copy [`integrations/claude-code/proctor-hook.sh`](integrations/claude-code/proctor-hook.sh) to `.claude/hooks/proctor-hook.sh` and wire it into `.claude/settings.json` under `hooks.Stop`.
 - **Cursor Rule:** Copy [`integrations/cursor/proctor.mdc`](integrations/cursor/proctor.mdc) to `.cursor/rules/proctor.mdc`.
-- **`AGENTS.md` / `CLAUDE.md`:** Append the snippet in [`integrations/AGENTS.md`](integrations/AGENTS.md).
+- **`AGENTS.md` / `CLAUDE.md`:** Append [`integrations/AGENTS.md`](integrations/AGENTS.md).
+- **Claude Code Stop Hook *(set `"timeout": 180` in `.claude/settings.json`)*:** Copy [`integrations/claude-code/proctor-hook.sh`](integrations/claude-code/proctor-hook.sh) to `.claude/hooks/proctor-hook.sh`. It blocks only on `Broken` tests, respects `stop_hook_active`, uses `git merge-base`, caps at `--max-tests 5`, and leaves coverage/refactor tests unblocked.
 
 ---
 

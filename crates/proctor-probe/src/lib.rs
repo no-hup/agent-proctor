@@ -9,8 +9,9 @@ pub use mutant::{apply_mutant_with_sentinel, generate_mutants, generate_targeted
 pub use runner::{execute_probe_run, ProbeOutcome};
 pub use sandbox::WorktreeGuard;
 pub use verify::{
-    has_pending_swap_backup, restore_swap_backup, verify_tests, verify_tests_with_timeout,
-    RunnerType, TestVerificationResult, VerificationStatus, VerifyTarget,
+    has_pending_swap_backup, restore_swap_backup, verify_tests, verify_tests_with_options,
+    verify_tests_with_timeout, RunnerType, TestVerificationResult, VerificationStatus,
+    VerifyTarget,
 };
 
 use anyhow::Result;

@@ -457,7 +457,7 @@ pub fn print_verification_results(results: &[proctor_probe::TestVerificationResu
                 discriminating += 1;
                 println!(
                     "  {} {}",
-                    "🛡️ DISCRIMINATING".bold().green(),
+                    "🛡️ CATCHES CHANGE".bold().green(),
                     r.test_id.bold()
                 );
                 println!("    Runner  : {} ({}ms)", r.runner.cyan(), r.duration_ms);
@@ -479,11 +479,11 @@ pub fn print_verification_results(results: &[proctor_probe::TestVerificationResu
                 non_discriminating += 1;
                 println!(
                     "  {} {}",
-                    "⚪ DOES NOT DISCRIMINATE".bold().dimmed(),
+                    "⚪ PASSES ON BOTH".bold().dimmed(),
                     r.test_id.bold()
                 );
                 println!("    Runner  : {} ({}ms)", r.runner.cyan(), r.duration_ms);
-                println!("    Status  : Passed on both head and base\n");
+                println!("    Status  : Passed on both head and base (expected for refactor/coverage tests)\n");
             }
             VerificationStatus::Broken { error } => {
                 broken += 1;
@@ -507,7 +507,7 @@ pub fn print_verification_results(results: &[proctor_probe::TestVerificationResu
 
     println!("{}", "─".repeat(70).dimmed());
     println!(
-        "Summary: {} discriminating, {} missing on base, {} does not discriminate, {} broken, {} inconclusive",
+        "Summary: {} catches change, {} missing on base, {} passes on both, {} broken, {} inconclusive",
         discriminating.to_string().green().bold(),
         missing.to_string().yellow(),
         non_discriminating,
@@ -539,7 +539,7 @@ pub fn render_verification_receipt(results: &[proctor_probe::TestVerificationRes
             VerificationStatus::Discriminating { reason } => {
                 discriminating += 1;
                 (
-                    "🛡️ **Discriminating**",
+                    "🛡️ **Catches change**",
                     reason.replace('|', "\\|").replace('\n', " "),
                 )
             }
@@ -553,7 +553,7 @@ pub fn render_verification_receipt(results: &[proctor_probe::TestVerificationRes
             VerificationStatus::DoesNotDiscriminate => {
                 non_discriminating += 1;
                 (
-                    "⚪ **Does not discriminate**",
+                    "⚪ **Passes on both**",
                     "Passed on both head and base".to_string(),
                 )
             }
@@ -581,7 +581,7 @@ pub fn render_verification_receipt(results: &[proctor_probe::TestVerificationRes
 
     out += "\n**Verification Summary:**\n";
     out += &format!(
-        "- 🛡️ **Discriminating:** {} (passed 2x on head, failed 2x on base with assertion failure)\n",
+        "- 🛡️ **Catches change:** {} (passed 2x on head, failed 2x on base with assertion failure)\n",
         discriminating
     );
     out += &format!(
@@ -589,7 +589,7 @@ pub fn render_verification_receipt(results: &[proctor_probe::TestVerificationRes
         missing
     );
     out += &format!(
-        "- ⚪ **Does not discriminate:** {} (passed on both head and base)\n",
+        "- ⚪ **Passes on both:** {} (expected for refactor/coverage tests; check if testing a behavior change)\n",
         non_discriminating
     );
     if broken > 0 {

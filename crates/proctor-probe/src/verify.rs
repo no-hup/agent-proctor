@@ -144,6 +144,8 @@ struct TimedOutput {
 struct SwapJournalEntry {
     rel_path: String,
     original_hex: Option<String>,
+    #[serde(default)]
+    swapped_blake3: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -206,7 +208,8 @@ pub fn has_pending_swap_backup(repo_root: &Path) -> Option<PathBuf> {
 }
 
 /// Restores files from `.git/proctor-swap-backup.json` after an interrupted `proctor verify` run.
-pub fn restore_swap_backup(repo_root: &Path) -> Result<usize> {
+/// Refuses to overwrite any file whose on-disk contents changed after the swap unless `force` is true.
+pub fn restore_swap_backup(repo_root: &Path, force: bool) -> Result<usize> {
     let journal_path = swap_journal_path(repo_root);
     if !journal_path.exists() {
         return Ok(0);
@@ -215,6 +218,37 @@ pub fn restore_swap_backup(repo_root: &Path) -> Result<usize> {
         .with_context(|| format!("Failed to read {}", journal_path.display()))?;
     let journal: SwapJournal = serde_json::from_str(&content)
         .with_context(|| format!("Corrupt swap journal at {}", journal_path.display()))?;
+
+    if !force {
+        for entry in &journal.entries {
+            let abs_path = repo_root.join(&entry.rel_path);
+            match &entry.swapped_blake3 {
+                Some(expected_hash) => {
+                    let current = std::fs::read(&abs_path).with_context(|| {
+                        format!(
+                            "Refusing to restore '{}': missing or modified since interrupted swap (pass --force to overwrite)",
+                            entry.rel_path
+                        )
+                    })?;
+                    let current_hash = blake3::hash(&current).to_hex().to_string();
+                    if current_hash != *expected_hash {
+                        anyhow::bail!(
+                            "Refusing to restore '{}': file was edited after interrupted swap (pass --force to overwrite)",
+                            entry.rel_path
+                        );
+                    }
+                }
+                None => {
+                    if abs_path.exists() {
+                        anyhow::bail!(
+                            "Refusing to restore '{}': file was recreated after interrupted swap (pass --force to overwrite)",
+                            entry.rel_path
+                        );
+                    }
+                }
+            }
+        }
+    }
 
     let count = journal.entries.len();
     for entry in &journal.entries {
@@ -263,6 +297,7 @@ struct SwapGuard {
     repo_root: PathBuf,
     journal_path: PathBuf,
     backups: HashMap<String, Option<Vec<u8>>>,
+    swapped_hashes: HashMap<String, Option<String>>,
     created_dirs: Vec<PathBuf>,
 }
 
@@ -272,6 +307,7 @@ impl SwapGuard {
             repo_root: repo_root.to_path_buf(),
             journal_path: swap_journal_path(repo_root),
             backups: HashMap::new(),
+            swapped_hashes: HashMap::new(),
             created_dirs: Vec::new(),
         }
     }
@@ -283,6 +319,7 @@ impl SwapGuard {
             .map(|(rel_path, bytes)| SwapJournalEntry {
                 rel_path: rel_path.clone(),
                 original_hex: bytes.as_ref().map(|b| bytes_to_hex(b)),
+                swapped_blake3: self.swapped_hashes.get(rel_path).cloned().flatten(),
             })
             .collect();
         entries.sort_by(|a, b| a.rel_path.cmp(&b.rel_path));
@@ -323,22 +360,18 @@ impl SwapGuard {
         Ok(())
     }
 
-    /// Snapshots original bytes of all `rel_paths` to disk journal first, then swaps to `git_ref`.
+    /// Snapshots original bytes and target swapped hashes to disk journal first, then swaps to `git_ref`.
     fn swap_paths_to_ref(&mut self, git_ref: &str, rel_paths: &[String]) -> Result<()> {
         if rel_paths.is_empty() {
             return Ok(());
         }
 
+        let mut target_contents: Vec<(&str, Option<Vec<u8>>)> = Vec::with_capacity(rel_paths.len());
         for rel_path in rel_paths {
             if !self.backups.contains_key(rel_path) {
                 let existing = std::fs::read(self.repo_root.join(rel_path)).ok();
                 self.backups.insert(rel_path.clone(), existing);
             }
-        }
-        // Persist recovery backup BEFORE modifying any file on disk (survives SIGKILL)
-        self.flush_journal()?;
-
-        for rel_path in rel_paths {
             let spec = format!("{}:{}", git_ref, rel_path);
             let out = Command::new("git")
                 .current_dir(&self.repo_root)
@@ -346,11 +379,22 @@ impl SwapGuard {
                 .output()
                 .with_context(|| format!("Failed to inspect git ref {}", spec))?;
 
-            if out.status.success() {
-                self.apply_file_state(rel_path, Some(&out.stdout))?;
+            let target = if out.status.success() {
+                let h = blake3::hash(&out.stdout).to_hex().to_string();
+                self.swapped_hashes.insert(rel_path.clone(), Some(h));
+                Some(out.stdout)
             } else {
-                self.apply_file_state(rel_path, None)?;
-            }
+                self.swapped_hashes.insert(rel_path.clone(), None);
+                None
+            };
+            target_contents.push((rel_path.as_str(), target));
+        }
+
+        // Persist recovery backup BEFORE modifying any file on disk (survives SIGKILL)
+        self.flush_journal()?;
+
+        for (rel_path, target) in target_contents {
+            self.apply_file_state(rel_path, target.as_deref())?;
         }
         Ok(())
     }
@@ -566,7 +610,7 @@ pub fn verify_tests(
     targets: &[VerifyTarget],
     changed_paths_hint: &[String],
 ) -> Result<Vec<TestVerificationResult>> {
-    verify_tests_with_timeout(
+    verify_tests_with_options(
         repo_root,
         base_ref,
         head_ref,
@@ -574,6 +618,7 @@ pub fn verify_tests(
         targets,
         changed_paths_hint,
         DEFAULT_RUN_TIMEOUT,
+        MAX_VERIFY_TARGETS,
     )
 }
 
@@ -586,6 +631,30 @@ pub fn verify_tests_with_timeout(
     targets: &[VerifyTarget],
     changed_paths_hint: &[String],
     per_run_timeout: Duration,
+) -> Result<Vec<TestVerificationResult>> {
+    verify_tests_with_options(
+        repo_root,
+        base_ref,
+        head_ref,
+        runner,
+        targets,
+        changed_paths_hint,
+        per_run_timeout,
+        MAX_VERIFY_TARGETS,
+    )
+}
+
+/// Configurable-timeout and test-cap entrypoint for hooks and custom CI budgets.
+#[allow(clippy::too_many_arguments)]
+pub fn verify_tests_with_options(
+    repo_root: &Path,
+    base_ref: &str,
+    head_ref: Option<&str>,
+    runner: RunnerType,
+    targets: &[VerifyTarget],
+    changed_paths_hint: &[String],
+    per_run_timeout: Duration,
+    max_tests: usize,
 ) -> Result<Vec<TestVerificationResult>> {
     let mut results = Vec::new();
     if targets.is_empty() {
@@ -644,12 +713,10 @@ pub fn verify_tests_with_timeout(
         return Ok(results);
     }
 
-    // Cap active targets to keep CI runtime bounded
-    let (active_targets, overflow_targets) = if targets.len() > MAX_VERIFY_TARGETS {
-        (
-            &targets[..MAX_VERIFY_TARGETS],
-            &targets[MAX_VERIFY_TARGETS..],
-        )
+    // Cap active targets to keep runtime bounded
+    let effective_cap = max_tests.max(1);
+    let (active_targets, overflow_targets) = if targets.len() > effective_cap {
+        (&targets[..effective_cap], &targets[effective_cap..])
     } else {
         (targets, &[][..])
     };
@@ -859,7 +926,7 @@ pub fn verify_tests_with_timeout(
             test_id: target.canonical_id(),
             test_file: target.file_path.clone(),
             status: VerificationStatus::Inconclusive {
-                reason: format!("Skipped: exceeded {}-test CI cap", MAX_VERIFY_TARGETS),
+                reason: format!("Skipped: exceeded {}-test verification cap", effective_cap),
             },
             runner: runner_label(runner, &target.file_path, repo_root),
             duration_ms: 0,
@@ -1766,6 +1833,11 @@ mod tests {
             .backups
             .insert("app/existing.py".into(), Some(b"head_v1".to_vec()));
         guard.backups.insert("app/sub/added.py".into(), None);
+        guard.swapped_hashes.insert(
+            "app/existing.py".into(),
+            Some(blake3::hash(b"base_v0").to_hex().to_string()),
+        );
+        guard.swapped_hashes.insert("app/sub/added.py".into(), None);
         guard.flush_journal().unwrap();
 
         // Simulate crash (SIGKILL) leaving base state on disk and journal behind
@@ -1774,7 +1846,7 @@ mod tests {
         std::mem::forget(guard);
 
         assert!(has_pending_swap_backup(root).is_some());
-        let restored = restore_swap_backup(root).unwrap();
+        let restored = restore_swap_backup(root, false).unwrap();
         assert_eq!(restored, 2);
         assert!(has_pending_swap_backup(root).is_none());
         assert_eq!(
@@ -1782,5 +1854,46 @@ mod tests {
             "head_v1"
         );
         assert!(!root.join("app/sub/added.py").exists());
+    }
+
+    #[test]
+    fn test_restore_refuses_to_clobber_post_crash_edits() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        Command::new("git")
+            .current_dir(root)
+            .args(["init"])
+            .output()
+            .unwrap();
+        std::fs::create_dir_all(root.join("app")).unwrap();
+        std::fs::write(root.join("app/mod.py"), "head_v1").unwrap();
+
+        let mut guard = SwapGuard::new(root);
+        guard
+            .backups
+            .insert("app/mod.py".into(), Some(b"head_v1".to_vec()));
+        guard.swapped_hashes.insert(
+            "app/mod.py".into(),
+            Some(blake3::hash(b"base_v0").to_hex().to_string()),
+        );
+        guard.flush_journal().unwrap();
+        std::mem::forget(guard);
+
+        // Agent edited app/mod.py on top of base_v0 after crash
+        std::fs::write(root.join("app/mod.py"), "agent_new_work").unwrap();
+
+        assert!(restore_swap_backup(root, false).is_err());
+        assert_eq!(
+            std::fs::read_to_string(root.join("app/mod.py")).unwrap(),
+            "agent_new_work"
+        );
+
+        // --force overrides when explicitly requested
+        let forced = restore_swap_backup(root, true).unwrap();
+        assert_eq!(forced, 1);
+        assert_eq!(
+            std::fs::read_to_string(root.join("app/mod.py")).unwrap(),
+            "head_v1"
+        );
     }
 }
