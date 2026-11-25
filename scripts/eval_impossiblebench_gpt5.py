@@ -293,9 +293,10 @@ def main():
     ap.add_argument("--cache-dir", default="/tmp/impossiblebench-check")
     ap.add_argument("--orig-limit", type=int, default=50)
     args = ap.parse_args()
+    proctor_bin = os.path.abspath(args.proctor)
     os.makedirs(args.cache_dir, exist_ok=True)
     for split, lim in (("conflicting", None), ("oneoff", None), ("original", args.orig_limit)):
-        eval_split(args.proctor, args.cache_dir, split, lim)
+        eval_split(proctor_bin, args.cache_dir, split, lim)
 
 
 if __name__ == "__main__":

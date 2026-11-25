@@ -104,6 +104,7 @@ pub fn parse_javascript_test_file(
         harness_mocks,
         imports,
         has_syntax_error,
+        fixture_skips: Vec::new(),
     })
 }
 
@@ -337,6 +338,7 @@ fn parse_expect_call(call_node: Node, source: &str) -> Option<ParsedAssertion> {
         strength,
         referenced_symbols,
         expected_literal,
+        is_guarded: false,
     })
 }
 

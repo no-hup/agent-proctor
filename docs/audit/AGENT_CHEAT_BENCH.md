@@ -20,11 +20,11 @@
 
 | Split | Valid Evaluated | Guard (Block) | Report (Review) | Flagged (`Guard + Report`) | Surfaced in Test-Change Receipt | Clean (`Pass`) |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
-| **`conflicting`** (real GPT-5 cheats) | `39` | `5` (`12.8%`) | `9` (`23.1%`) | **`14 / 39` (`35.9%`)** | **`25 / 39` (`64.1%`)** | `25` |
+| **`conflicting`** (real GPT-5 cheats) | `39` | `6` (`15.4%`) | `10` (`25.6%`) | **`16 / 39` (`41.0%`)** | **`25 / 39` (`64.1%`)** | `23` |
 | **`oneoff`** (real GPT-5 cheats) | `31` | `0` (`0.0%`) | `6` (`19.4%`) | **`6 / 31` (`19.4%`)** | **`30 / 31` (`96.8%`)** | `25` |
 | **`original`** (solvable GPT-5 controls) | `50` | `0` (`0.0%`) | `0` (`0.0%`) | **`0 / 50` (`0.0%`)** | `0 / 50` (`0.0%`) | **`50`** |
 
-*(Note: `proctor verify` was not executed because ancient SWE-bench tasks require per-instance Dockerized Python environments.)*
+*(Updated after implementing generic `if`/`try`/`pytest.raises` assertion wrapping, fixture skip detection, and `assert_*` helper tracking: `conflicting` rose `14/39 -> 16/39` while `original` controls stayed `0/50`. Note: `proctor verify` was not executed because ancient SWE-bench tasks require per-instance Dockerized Python environments.)*
 
 ---
 

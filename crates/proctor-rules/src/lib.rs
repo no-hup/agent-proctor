@@ -127,6 +127,57 @@ fn evaluate_parse_errors(diff: &SemanticDiff, findings: &mut Vec<Finding>) {
 
 /// PROCTOR-001: Checks for assertion deletions, downgrades, skips, and un-orphaned test removals.
 fn evaluate_assertion_lock(diff: &SemanticDiff, policy: &Policy, findings: &mut Vec<Finding>) {
+    // 0. Non-test fixture/helper skip injection inside test files
+    let base_skips: HashSet<&(String, String)> = diff.base_fixture_skips.iter().collect();
+    for (file_path, fn_name) in &diff.head_fixture_skips {
+        if !base_skips.contains(&(file_path.clone(), fn_name.clone())) {
+            let scoped_name = format!("{}::{}", file_path, fn_name);
+            let id = Finding::compute_id(RuleId::AssertionLock, &scoped_name, "fixture_skipped");
+            let (verdict, tier, message) = if !diff.head_sources.is_empty() {
+                (
+                    Verdict::Block {
+                        rule: RuleId::AssertionLock,
+                        evidence: format!(
+                            "Test helper/fixture '{}' added a skip call while production code changed",
+                            scoped_name
+                        ),
+                    },
+                    RuleTier::Guard,
+                    format!(
+                        "Test helper/fixture '{}' added a skip call (pytest.skip / skipTest) while production code changed.",
+                        scoped_name
+                    ),
+                )
+            } else {
+                (
+                    Verdict::Review {
+                        finding_id: id.clone(),
+                        evidence: format!(
+                            "Test helper/fixture '{}' added a skip call; requires reviewer acceptance.",
+                            scoped_name
+                        ),
+                    },
+                    RuleTier::Report,
+                    format!(
+                        "Test helper/fixture '{}' added a skip call (pytest.skip / skipTest); requires reviewer acknowledgement.",
+                        scoped_name
+                    ),
+                )
+            };
+            findings.push(Finding {
+                id,
+                rule_id: RuleId::AssertionLock,
+                tier,
+                verdict,
+                file_path: file_path.clone(),
+                line_number: None,
+                test_name: Some(scoped_name),
+                message,
+                evidence: "Skipped helper/fixture".into(),
+            });
+        }
+    }
+
     // 1a. Paired test assertion analysis
     for pair in &diff.paired_tests {
         let base_test = &pair.base_test;
@@ -197,36 +248,38 @@ fn evaluate_assertion_lock(diff: &SemanticDiff, policy: &Policy, findings: &mut 
             });
         }
 
-        // 1a(ii). Check for modified, weakened, or deleted assertions via AssertionStrength lattice
-        let head_texts: HashSet<&str> = head_test
-            .assertions
-            .iter()
-            .map(|a| a.text.as_str())
-            .collect();
+        // 1a(ii). Check for modified, weakened, guard-wrapped, or deleted assertions via AssertionStrength lattice
         let has_production_changes = !diff.head_sources.is_empty() || !diff.base_sources.is_empty();
         let linked = diff.test_links_changed_code(base_test, head_test);
 
         for base_assert in &base_test.assertions {
             // A test that only follows a production rename is not a modification.
             let followed = apply_renames(&base_assert.text, &diff.renamed_symbols);
-            if !head_texts.contains(base_assert.text.as_str())
-                && !head_texts.contains(followed.as_str())
-            {
-                // This assertion was modified or removed
+            let preserved_unguarded = head_test.assertions.iter().any(|h| {
+                (h.text == base_assert.text || h.text == followed)
+                    && (!h.is_guarded || base_assert.is_guarded)
+            });
+            if !preserved_unguarded {
+                let wrapped_in_guard = !base_assert.is_guarded
+                    && head_test.assertions.iter().any(|h| {
+                        (h.text == base_assert.text || h.text == followed) && h.is_guarded
+                    });
+                // This assertion was modified, guard-wrapped, or removed
                 let justified = diff.is_reference_orphaned(&base_assert.referenced_symbols);
 
                 if !justified {
                     let id =
                         Finding::compute_id(RuleId::AssertionLock, &test_name, &base_assert.text);
 
-                    // Weakened = the test now has fewer assertions at or above this one's strength.
+                    // Weakened = fewer unguarded assertions at or above this strength, or wrapped in if/raises.
                     let at_least = |t: &proctor_parse::ParsedTest| {
                         t.assertions
                             .iter()
-                            .filter(|a| a.strength >= base_assert.strength)
+                            .filter(|a| !a.is_guarded && a.strength >= base_assert.strength)
                             .count()
                     };
-                    let was_weakened = at_least(head_test) < at_least(base_test);
+                    let was_weakened =
+                        wrapped_in_guard || at_least(head_test) < at_least(base_test);
 
                     // Linkage: only a change to code this test actually references can explain
                     // a changed assertion. An unrelated production edit does not.
@@ -1676,6 +1729,85 @@ def test_calc():
             suppressed.len(),
             0,
             "Maintainer waiver can clear Guard finding"
+        );
+    }
+
+    #[test]
+    fn test_conditional_if_guard_and_raises_wrapping_detected() {
+        let base_test = r#"
+def test_dtype(dtype):
+    assert str(dtype) == "float32"
+
+def test_combine(actual):
+    assert_identical(1, actual)
+"#;
+        let head_test = r#"
+def test_dtype(dtype):
+    if dtype == "float32":
+        assert str(dtype) == "float32"
+
+def test_combine(actual):
+    with pytest.raises(AssertionError):
+        assert_identical(1, actual)
+"#;
+        let base = std::collections::HashMap::from([(
+            "tests/test_x.py".to_string(),
+            base_test.to_string(),
+        )]);
+        let head = std::collections::HashMap::from([(
+            "tests/test_x.py".to_string(),
+            head_test.to_string(),
+        )]);
+        let diff = SemanticDiff::build(&base, &head).unwrap();
+        let findings = evaluate_rules(&diff, &Policy::default(), &WaiverSet::default());
+        assert_eq!(
+            findings.len(),
+            2,
+            "Both if-wrapped and pytest.raises-wrapped assertions must trigger findings: {:?}",
+            findings
+        );
+        assert!(findings.iter().all(|f| f.tier == RuleTier::Guard));
+    }
+
+    #[test]
+    fn test_fixture_skip_and_assert_helper_weakening_detected() {
+        let base_test = r#"
+def app_params():
+    return True
+
+def assert_node(node, expected):
+    assert node == expected
+"#;
+        let head_test = r#"
+def app_params():
+    pytest.skip("missing root")
+
+def assert_node(node, expected):
+    if expected == "A" and node == "B":
+        return
+    assert node == expected
+"#;
+        let base = std::collections::HashMap::from([
+            ("tests/test_h.py".to_string(), base_test.to_string()),
+            ("src/mod.py".to_string(), "def f(): return 1\n".to_string()),
+        ]);
+        let head = std::collections::HashMap::from([
+            ("tests/test_h.py".to_string(), head_test.to_string()),
+            ("src/mod.py".to_string(), "def f(): return 2\n".to_string()),
+        ]);
+        let diff = SemanticDiff::build(&base, &head).unwrap();
+        let findings = evaluate_rules(&diff, &Policy::default(), &WaiverSet::default());
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.tier == RuleTier::Guard && f.message.contains("app_params")),
+            "Fixture skip alongside prod change must trigger Guard: {:?}",
+            findings
+        );
+        assert!(
+            findings.iter().any(|f| f.message.contains("assert_node")),
+            "Conditional weakening inside assert_* helper must trigger finding: {:?}",
+            findings
         );
     }
 }

@@ -30,6 +30,8 @@ pub struct SemanticDiff {
     pub raw_head_files: HashMap<String, String>,
     pub base_harness_mocks: Vec<proctor_parse::ParsedMock>,
     pub head_harness_mocks: Vec<proctor_parse::ParsedMock>,
+    pub base_fixture_skips: Vec<(String, String)>,
+    pub head_fixture_skips: Vec<(String, String)>,
     pub parse_errors: Vec<(String, String)>,
 }
 
@@ -151,16 +153,24 @@ impl SemanticDiff {
         // 4. Two-Pass Test Pairing
         let mut all_base_tests = Vec::new();
         let mut base_harness_mocks = Vec::new();
-        for f in base_tests_by_file.into_values() {
+        let mut base_fixture_skips = Vec::new();
+        for (path, f) in base_tests_by_file {
             all_base_tests.extend(f.tests);
             base_harness_mocks.extend(f.harness_mocks);
+            for fn_name in f.fixture_skips {
+                base_fixture_skips.push((path.clone(), fn_name));
+            }
         }
 
         let mut all_head_tests = Vec::new();
         let mut head_harness_mocks = Vec::new();
-        for f in head_tests_by_file.into_values() {
+        let mut head_fixture_skips = Vec::new();
+        for (path, f) in head_tests_by_file {
             all_head_tests.extend(f.tests);
             head_harness_mocks.extend(f.harness_mocks);
+            for fn_name in f.fixture_skips {
+                head_fixture_skips.push((path.clone(), fn_name));
+            }
         }
 
         let mut paired_tests = Vec::new();
@@ -238,6 +248,8 @@ impl SemanticDiff {
             raw_head_files: head_files.clone(),
             base_harness_mocks,
             head_harness_mocks,
+            base_fixture_skips,
+            head_fixture_skips,
             parse_errors,
         })
     }

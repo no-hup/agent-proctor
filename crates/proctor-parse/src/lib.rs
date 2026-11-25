@@ -14,6 +14,8 @@ pub struct ParsedTestFile {
     pub harness_mocks: Vec<ParsedMock>,
     pub imports: Vec<String>,
     pub has_syntax_error: bool,
+    /// Non-test helper/fixture functions in this file containing skip calls.
+    pub fixture_skips: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -34,6 +36,8 @@ pub struct ParsedAssertion {
     pub strength: AssertionStrength,
     pub referenced_symbols: Vec<String>,
     pub expected_literal: Option<String>,
+    /// True if nested inside conditional control flow (`if`/`try`) or `pytest.raises`.
+    pub is_guarded: bool,
 }
 
 #[derive(Debug, Clone)]

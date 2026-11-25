@@ -18,6 +18,7 @@ pub fn parse_python_test_file(file_path: &str, source: &str) -> Result<ParsedTes
     let mut tests = Vec::new();
     let mut harness_mocks = Vec::new();
     let mut imports = Vec::new();
+    let mut fixture_skips = Vec::new();
 
     walk_python_test_nodes(
         root,
@@ -27,6 +28,7 @@ pub fn parse_python_test_file(file_path: &str, source: &str) -> Result<ParsedTes
         &mut tests,
         &mut harness_mocks,
         &mut imports,
+        &mut fixture_skips,
     );
 
     Ok(ParsedTestFile {
@@ -35,6 +37,7 @@ pub fn parse_python_test_file(file_path: &str, source: &str) -> Result<ParsedTes
         harness_mocks,
         imports,
         has_syntax_error,
+        fixture_skips,
     })
 }
 
@@ -73,6 +76,16 @@ pub fn parse_python_source_file(file_path: &str, source: &str) -> Result<ParsedS
     })
 }
 
+fn is_python_test_or_assert_helper(fn_name: &str) -> bool {
+    fn_name.starts_with("test_") || fn_name.ends_with("_test") || fn_name.starts_with("assert_")
+}
+
+fn body_contains_skip_call(node: Node, source: &str) -> bool {
+    let txt = node.utf8_text(source.as_bytes()).unwrap_or("");
+    txt.contains("pytest.skip(") || txt.contains("self.skipTest(") || txt.contains("unittest.skip(")
+}
+
+#[allow(clippy::too_many_arguments)]
 fn walk_python_test_nodes(
     node: Node,
     source: &str,
@@ -81,6 +94,7 @@ fn walk_python_test_nodes(
     tests: &mut Vec<ParsedTest>,
     harness_mocks: &mut Vec<ParsedMock>,
     imports: &mut Vec<String>,
+    fixture_skips: &mut Vec<String>,
 ) {
     let cursor = &mut node.walk();
     for child in node.children(cursor) {
@@ -103,6 +117,7 @@ fn walk_python_test_nodes(
                             tests,
                             harness_mocks,
                             imports,
+                            fixture_skips,
                         );
                     }
                 }
@@ -110,10 +125,12 @@ fn walk_python_test_nodes(
             "function_definition" => {
                 if let Some(name_node) = child.child_by_field_name("name") {
                     let fn_name = name_node.utf8_text(source.as_bytes()).unwrap_or("");
-                    if fn_name.starts_with("test_") || fn_name.ends_with("_test") {
+                    if is_python_test_or_assert_helper(fn_name) {
                         let parsed_test =
                             extract_python_test(child, source, file_path, scope, fn_name, false);
                         tests.push(parsed_test);
+                    } else if body_contains_skip_call(child, source) {
+                        fixture_skips.push(fn_name.to_string());
                     }
                 }
             }
@@ -130,13 +147,15 @@ fn walk_python_test_nodes(
                     if def_node.kind() == "function_definition" {
                         if let Some(name_node) = def_node.child_by_field_name("name") {
                             let fn_name = name_node.utf8_text(source.as_bytes()).unwrap_or("");
-                            if fn_name.starts_with("test_") || fn_name.ends_with("_test") {
+                            if is_python_test_or_assert_helper(fn_name) {
                                 let mut parsed_test = extract_python_test(
                                     def_node, source, file_path, scope, fn_name, is_skipped,
                                 );
                                 parsed_test.parametrized_hashes = param_hashes;
                                 parsed_test.mocks.extend(decorator_mocks);
                                 tests.push(parsed_test);
+                            } else if is_skipped || body_contains_skip_call(def_node, source) {
+                                fixture_skips.push(fn_name.to_string());
                             }
                         }
                     }
@@ -198,7 +217,7 @@ fn extract_python_test(
     }
 
     if let Some(body) = fn_node.child_by_field_name("body") {
-        extract_assertions_and_mocks(body, source, &mut assertions, &mut mocks);
+        extract_assertions_and_mocks(body, source, &mut assertions, &mut mocks, false);
     }
 
     let mut body_symbols = Vec::new();
@@ -217,41 +236,73 @@ fn extract_python_test(
     }
 }
 
+fn contains_return_statement(node: Node) -> bool {
+    if node.kind() == "return_statement" {
+        return true;
+    }
+    let cursor = &mut node.walk();
+    for child in node.children(cursor) {
+        if contains_return_statement(child) {
+            return true;
+        }
+    }
+    false
+}
+
 fn extract_assertions_and_mocks(
     node: Node,
     source: &str,
     assertions: &mut Vec<ParsedAssertion>,
     mocks: &mut Vec<ParsedMock>,
+    is_guarded: bool,
 ) {
+    let mut current_guarded = is_guarded;
     let cursor = &mut node.walk();
     for child in node.children(cursor) {
         match child.kind() {
             "assert_statement" => {
-                if let Some(parsed) = parse_assert_statement(child, source) {
+                if let Some(parsed) = parse_assert_statement(child, source, current_guarded) {
                     assertions.push(parsed);
                 }
             }
             "call" => {
                 if let Some(mock) = extract_mock_call(child, source) {
                     mocks.push(mock);
-                } else if let Some(unittest_assert) = parse_unittest_call(child, source) {
+                } else if let Some(unittest_assert) =
+                    parse_unittest_call(child, source, current_guarded)
+                {
                     assertions.push(unittest_assert);
                 }
             }
+            "if_statement" => {
+                extract_assertions_and_mocks(child, source, assertions, mocks, true);
+                if contains_return_statement(child) {
+                    current_guarded = true;
+                }
+            }
+            "try_statement" => {
+                extract_assertions_and_mocks(child, source, assertions, mocks, true);
+            }
             "with_statement" => {
-                if let Some(pytest_raises) = parse_pytest_raises(child, source) {
+                let raises_ctx = parse_pytest_raises(child, source, current_guarded);
+                let inner_guarded = current_guarded || raises_ctx.is_some();
+                if let Some(pytest_raises) = raises_ctx {
                     assertions.push(pytest_raises);
                 }
-                extract_assertions_and_mocks(child, source, assertions, mocks);
+                extract_assertions_and_mocks(child, source, assertions, mocks, inner_guarded);
             }
             _ => {
-                extract_assertions_and_mocks(child, source, assertions, mocks);
+                extract_assertions_and_mocks(child, source, assertions, mocks, current_guarded);
             }
         }
     }
 }
 
-fn parse_assert_statement(assert_node: Node, source: &str) -> Option<ParsedAssertion> {
+fn parse_assert_statement(
+    assert_node: Node,
+    source: &str,
+    is_guarded: bool,
+) -> Option<ParsedAssertion> {
     let text = assert_node
         .utf8_text(source.as_bytes())
         .ok()?
@@ -318,10 +369,11 @@ fn parse_assert_statement(assert_node: Node, source: &str) -> Option<ParsedAsser
         strength,
         referenced_symbols,
         expected_literal,
+        is_guarded,
     })
 }
 
-fn parse_unittest_call(call_node: Node, source: &str) -> Option<ParsedAssertion> {
+fn parse_unittest_call(call_node: Node, source: &str, is_guarded: bool) -> Option<ParsedAssertion> {
     let text = call_node
         .utf8_text(source.as_bytes())
         .ok()?
@@ -363,10 +415,11 @@ fn parse_unittest_call(call_node: Node, source: &str) -> Option<ParsedAssertion>
         strength,
         referenced_symbols,
         expected_literal,
+        is_guarded,
     })
 }
 
-fn parse_pytest_raises(with_node: Node, source: &str) -> Option<ParsedAssertion> {
+fn parse_pytest_raises(with_node: Node, source: &str, is_guarded: bool) -> Option<ParsedAssertion> {
     // Only treat `with` blocks that actually assert exceptions/warnings as assertions;
     // regular context managers (`with open(...)`, `with wire_server(...)`) are setup/resources.
     let header_end = with_node
@@ -406,6 +459,7 @@ fn parse_pytest_raises(with_node: Node, source: &str) -> Option<ParsedAssertion>
         strength,
         referenced_symbols,
         expected_literal: None,
+        is_guarded,
     })
 }
 
