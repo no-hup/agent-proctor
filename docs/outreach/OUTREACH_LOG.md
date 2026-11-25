@@ -1,5 +1,7 @@
 # agent-proctor Maintainer Outreach Log
 
+> **Long-term strategy & experiment notebook:** Read and update [GROWTH_SCRATCHBOOK.md](GROWTH_SCRATCHBOOK.md) before proposing any new outreach, changing GTM copy, or running growth experiments.
+
 Tracks high-converting, reproducible-proof outreach to open-source maintainers.
 
 ## Active Outreach Pipeline
