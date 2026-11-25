@@ -97,6 +97,10 @@ enum Commands {
         /// Append the verification receipt to this file (e.g. $GITHUB_STEP_SUMMARY)
         #[arg(long)]
         receipt: Option<PathBuf>,
+
+        /// Restore working tree files from an interrupted verify swap backup (.git/proctor-swap-backup.json)
+        #[arg(long)]
+        restore: bool,
     },
     /// Run ephemeral mutation probe in an isolated git worktree
     Probe {
@@ -209,7 +213,15 @@ fn main() -> Result<()> {
             runner,
             format,
             receipt,
-        }) => run_verify(&base, head.as_deref(), runner, format, receipt.as_deref()),
+            restore,
+        }) => run_verify(
+            &base,
+            head.as_deref(),
+            runner,
+            format,
+            receipt.as_deref(),
+            restore,
+        ),
         Some(Commands::Probe {
             base,
             head,
@@ -340,7 +352,7 @@ fn run_scan(
 
     // 5c. Optional dynamic verification (never alters scan exit code)
     if verify {
-        println!("proctor: Running dynamic regression verification...");
+        eprintln!("proctor: Running dynamic regression verification...");
         let targets = extract_verify_targets(&diff);
         let changed_paths_hint = collect_changed_paths_from_diff(&diff);
         match proctor_probe::verify_tests(
@@ -507,8 +519,22 @@ fn run_verify(
     runner: CliRunnerType,
     format: OutputFormat,
     receipt_path: Option<&Path>,
+    restore: bool,
 ) -> Result<()> {
     let repo_root = Path::new(".");
+    if restore {
+        let count = proctor_probe::restore_swap_backup(repo_root)?;
+        if count == 0 {
+            println!("proctor verify: No pending swap backup found.");
+        } else {
+            println!(
+                "proctor verify: Restored {} file(s) from swap backup.",
+                count
+            );
+        }
+        return Ok(());
+    }
+
     let changed = match git::get_changed_files(base, head) {
         Ok(c) => c,
         Err(e) => {
@@ -546,7 +572,7 @@ fn run_verify(
         return Ok(());
     }
 
-    println!(
+    eprintln!(
         "proctor verify: Running dynamic regression verification on {} test(s)...",
         targets.len()
     );

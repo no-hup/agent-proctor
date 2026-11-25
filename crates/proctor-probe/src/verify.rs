@@ -117,6 +117,7 @@ pub struct TestVerificationResult {
     pub test_file: String,
     pub status: VerificationStatus,
     pub runner: String,
+    #[serde(skip_serializing, default)]
     pub duration_ms: u64,
 }
 
@@ -139,42 +140,167 @@ struct TimedOutput {
     timed_out: bool,
 }
 
-/// RAII guard that swaps non-test production files in `repo_root` and restores
-/// exact pre-existing disk contents on `restore()` or `Drop` (even on panic).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SwapJournalEntry {
+    rel_path: String,
+    original_hex: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SwapJournal {
+    entries: Vec<SwapJournalEntry>,
+}
+
+fn bytes_to_hex(bytes: &[u8]) -> String {
+    const LUT: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for &b in bytes {
+        out.push(LUT[(b >> 4) as usize] as char);
+        out.push(LUT[(b & 0x0f) as usize] as char);
+    }
+    out
+}
+
+fn hex_to_bytes(hex: &str) -> Result<Vec<u8>> {
+    if !hex.len().is_multiple_of(2) {
+        anyhow::bail!("Invalid hex backup length");
+    }
+    let mut out = Vec::with_capacity(hex.len() / 2);
+    let raw = hex.as_bytes();
+    for pair in raw.as_chunks::<2>().0 {
+        let hi = (pair[0] as char)
+            .to_digit(16)
+            .ok_or_else(|| anyhow::anyhow!("Invalid hex char"))?;
+        let lo = (pair[1] as char)
+            .to_digit(16)
+            .ok_or_else(|| anyhow::anyhow!("Invalid hex char"))?;
+        out.push(((hi << 4) | lo) as u8);
+    }
+    Ok(out)
+}
+
+fn swap_journal_path(repo_root: &Path) -> PathBuf {
+    let git_dir = Command::new("git")
+        .current_dir(repo_root)
+        .args(["rev-parse", "--git-dir"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| {
+            let p = PathBuf::from(String::from_utf8_lossy(&o.stdout).trim());
+            if p.is_absolute() {
+                p
+            } else {
+                repo_root.join(p)
+            }
+        })
+        .unwrap_or_else(|| repo_root.join(".git"));
+    git_dir.join("proctor-swap-backup.json")
+}
+
+/// Returns the path of an unfinished swap backup journal if a previous `proctor verify`
+/// run was killed mid-swap (e.g. via SIGINT/SIGKILL).
+pub fn has_pending_swap_backup(repo_root: &Path) -> Option<PathBuf> {
+    let p = swap_journal_path(repo_root);
+    p.exists().then_some(p)
+}
+
+/// Restores files from `.git/proctor-swap-backup.json` after an interrupted `proctor verify` run.
+pub fn restore_swap_backup(repo_root: &Path) -> Result<usize> {
+    let journal_path = swap_journal_path(repo_root);
+    if !journal_path.exists() {
+        return Ok(0);
+    }
+    let content = std::fs::read_to_string(&journal_path)
+        .with_context(|| format!("Failed to read {}", journal_path.display()))?;
+    let journal: SwapJournal = serde_json::from_str(&content)
+        .with_context(|| format!("Corrupt swap journal at {}", journal_path.display()))?;
+
+    let count = journal.entries.len();
+    for entry in &journal.entries {
+        if entry.rel_path.ends_with(".py") {
+            invalidate_pycache_for(repo_root, &entry.rel_path);
+        }
+        let abs_path = repo_root.join(&entry.rel_path);
+        match &entry.original_hex {
+            Some(hex) => {
+                let bytes = hex_to_bytes(hex)?;
+                if let Some(parent) = abs_path.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                std::fs::write(&abs_path, bytes)?;
+            }
+            None => {
+                if abs_path.exists() {
+                    let _ = std::fs::remove_file(&abs_path);
+                }
+                prune_empty_parents(&abs_path, repo_root);
+            }
+        }
+    }
+    let _ = std::fs::remove_file(&journal_path);
+    Ok(count)
+}
+
+fn prune_empty_parents(abs_file: &Path, stop_at: &Path) {
+    let stop_canon = std::fs::canonicalize(stop_at).unwrap_or_else(|_| stop_at.to_path_buf());
+    let mut cur = abs_file.parent();
+    while let Some(dir) = cur {
+        let dir_canon = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
+        if dir_canon == stop_canon {
+            break;
+        }
+        if std::fs::remove_dir(dir).is_err() {
+            break;
+        }
+        cur = dir.parent();
+    }
+}
+
+/// RAII guard that persists a pre-swap recovery journal before mutating `repo_root` and
+/// restores exact pre-existing disk contents on `restore()` or `Drop`.
 struct SwapGuard {
-    backups: HashMap<PathBuf, Option<Vec<u8>>>,
+    repo_root: PathBuf,
+    journal_path: PathBuf,
+    backups: HashMap<String, Option<Vec<u8>>>,
     created_dirs: Vec<PathBuf>,
 }
 
 impl SwapGuard {
-    fn new() -> Self {
+    fn new(repo_root: &Path) -> Self {
         Self {
+            repo_root: repo_root.to_path_buf(),
+            journal_path: swap_journal_path(repo_root),
             backups: HashMap::new(),
             created_dirs: Vec::new(),
         }
     }
 
-    /// Snapshots `abs_path` once (if not already backed up) before modifying it.
-    fn record_original(&mut self, abs_path: &Path) {
-        if self.backups.contains_key(abs_path) {
-            return;
+    fn flush_journal(&self) -> Result<()> {
+        let mut entries: Vec<SwapJournalEntry> = self
+            .backups
+            .iter()
+            .map(|(rel_path, bytes)| SwapJournalEntry {
+                rel_path: rel_path.clone(),
+                original_hex: bytes.as_ref().map(|b| bytes_to_hex(b)),
+            })
+            .collect();
+        entries.sort_by(|a, b| a.rel_path.cmp(&b.rel_path));
+        let journal = SwapJournal { entries };
+        if let Some(parent) = self.journal_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
         }
-        let existing = std::fs::read(abs_path).ok();
-        self.backups.insert(abs_path.to_path_buf(), existing);
+        let tmp = self.journal_path.with_extension("json.tmp");
+        std::fs::write(&tmp, serde_json::to_string(&journal)?)?;
+        std::fs::rename(&tmp, &self.journal_path)?;
+        Ok(())
     }
 
     /// Replaces `rel_path` in `repo_root` with `new_bytes`, or deletes it if `None`.
-    fn apply_file_state(
-        &mut self,
-        repo_root: &Path,
-        rel_path: &str,
-        new_bytes: Option<&[u8]>,
-    ) -> Result<()> {
-        let abs_path = repo_root.join(rel_path);
-        self.record_original(&abs_path);
-
+    fn apply_file_state(&mut self, rel_path: &str, new_bytes: Option<&[u8]>) -> Result<()> {
+        let abs_path = self.repo_root.join(rel_path);
         if rel_path.ends_with(".py") {
-            invalidate_pycache_for(repo_root, rel_path);
+            invalidate_pycache_for(&self.repo_root, rel_path);
         }
 
         match new_bytes {
@@ -191,50 +317,51 @@ impl SwapGuard {
                 if abs_path.exists() {
                     std::fs::remove_file(&abs_path)?;
                 }
+                prune_empty_parents(&abs_path, &self.repo_root);
             }
         }
         Ok(())
     }
 
-    /// Swaps all specified relative paths to their content at `git_ref`.
-    fn swap_paths_to_ref(
-        &mut self,
-        repo_root: &Path,
-        git_ref: &str,
-        rel_paths: &[String],
-    ) -> Result<()> {
+    /// Snapshots original bytes of all `rel_paths` to disk journal first, then swaps to `git_ref`.
+    fn swap_paths_to_ref(&mut self, git_ref: &str, rel_paths: &[String]) -> Result<()> {
+        if rel_paths.is_empty() {
+            return Ok(());
+        }
+
+        for rel_path in rel_paths {
+            if !self.backups.contains_key(rel_path) {
+                let existing = std::fs::read(self.repo_root.join(rel_path)).ok();
+                self.backups.insert(rel_path.clone(), existing);
+            }
+        }
+        // Persist recovery backup BEFORE modifying any file on disk (survives SIGKILL)
+        self.flush_journal()?;
+
         for rel_path in rel_paths {
             let spec = format!("{}:{}", git_ref, rel_path);
             let out = Command::new("git")
-                .current_dir(repo_root)
+                .current_dir(&self.repo_root)
                 .args(["show", &spec])
                 .output()
                 .with_context(|| format!("Failed to inspect git ref {}", spec))?;
 
             if out.status.success() {
-                self.apply_file_state(repo_root, rel_path, Some(&out.stdout))?;
+                self.apply_file_state(rel_path, Some(&out.stdout))?;
             } else {
-                // Path did not exist at git_ref
-                self.apply_file_state(repo_root, rel_path, None)?;
+                self.apply_file_state(rel_path, None)?;
             }
         }
         Ok(())
     }
 
-    /// Restores all swapped files back to their pre-verification disk state.
+    /// Restores all swapped files back to their pre-verification disk state and removes journal.
     fn restore(&mut self) {
-        for (abs_path, original) in self.backups.drain() {
-            if abs_path.extension().and_then(|e| e.to_str()) == Some("py") {
-                if let Some(parent) = abs_path.parent() {
-                    let cache_dir = parent.join("__pycache__");
-                    if cache_dir.is_dir() {
-                        if let Some(stem) = abs_path.file_stem().and_then(|s| s.to_str()) {
-                            purge_stem_pyc(&cache_dir, stem);
-                        }
-                    }
-                }
+        for (rel_path, original) in self.backups.drain() {
+            if rel_path.ends_with(".py") {
+                invalidate_pycache_for(&self.repo_root, &rel_path);
             }
-
+            let abs_path = self.repo_root.join(&rel_path);
             match original {
                 Some(bytes) => {
                     if let Some(parent) = abs_path.parent() {
@@ -244,12 +371,14 @@ impl SwapGuard {
                 }
                 None => {
                     let _ = std::fs::remove_file(&abs_path);
+                    prune_empty_parents(&abs_path, &self.repo_root);
                 }
             }
         }
         for dir in self.created_dirs.drain(..).rev() {
             let _ = std::fs::remove_dir(dir);
         }
+        let _ = std::fs::remove_file(&self.journal_path);
     }
 }
 
@@ -463,6 +592,21 @@ pub fn verify_tests_with_timeout(
         return Ok(results);
     }
 
+    // 0a. Refuse if a prior interrupted swap backup is present
+    if let Some(backup) = has_pending_swap_backup(repo_root) {
+        anyhow::bail!(
+            "Found interrupted swap backup at {}; run 'proctor verify --restore' before verifying again",
+            backup.display()
+        );
+    }
+
+    // 0b. Refuse explicit --head verification on a dirty tracked working tree
+    if head_ref.is_some() && has_dirty_tracked_files(repo_root) {
+        anyhow::bail!(
+            "Working tree has uncommitted changes to tracked files; commit/stash them or omit --head to verify the working tree safely"
+        );
+    }
+
     // 1. Pre-flight security check: refuse dynamic execution under pull_request_target
     if std::env::var("GITHUB_EVENT_NAME").as_deref() == Ok("pull_request_target") {
         for target in targets {
@@ -510,13 +654,13 @@ pub fn verify_tests_with_timeout(
         (targets, &[][..])
     };
 
-    let mut swap_guard = SwapGuard::new();
+    let mut swap_guard = SwapGuard::new(repo_root);
 
     // If caller explicitly passed a head_ref other than current HEAD, stage all changed
     // paths to head_ref before the HEAD pass (and restore on Drop).
     if let Some(h_ref) = head_ref {
         if !refs_point_to_same_commit(repo_root, h_ref, "HEAD") {
-            swap_guard.swap_paths_to_ref(repo_root, h_ref, &all_changed)?;
+            swap_guard.swap_paths_to_ref(h_ref, &all_changed)?;
         }
     }
 
@@ -602,7 +746,7 @@ pub fn verify_tests_with_timeout(
             .cloned()
             .collect();
 
-        swap_guard.swap_paths_to_ref(repo_root, base_ref, &non_test_paths)?;
+        swap_guard.swap_paths_to_ref(base_ref, &non_test_paths)?;
 
         // 5. BASE phase: run tests that passed twice on HEAD
         for (idx, target) in active_targets.iter().enumerate() {
@@ -725,6 +869,35 @@ pub fn verify_tests_with_timeout(
     Ok(results)
 }
 
+fn has_dirty_tracked_files(repo_root: &Path) -> bool {
+    Command::new("git")
+        .current_dir(repo_root)
+        .args(["status", "--porcelain", "--untracked-files=no"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| !String::from_utf8_lossy(&o.stdout).trim().is_empty())
+        .unwrap_or(false)
+}
+
+fn resolve_node_bin(repo_root: &Path, target_file: &str, tool: &str) -> Option<PathBuf> {
+    let repo_canon = std::fs::canonicalize(repo_root).unwrap_or_else(|_| repo_root.to_path_buf());
+    let mut cur = repo_root.join(target_file);
+    cur.pop();
+    while cur.starts_with(repo_root) {
+        let candidate = cur.join("node_modules/.bin").join(tool);
+        if candidate.exists() {
+            return Some(candidate);
+        }
+        let cur_canon = std::fs::canonicalize(&cur).unwrap_or_else(|_| cur.clone());
+        if cur_canon == repo_canon || !cur.pop() {
+            break;
+        }
+    }
+    let root_candidate = repo_root.join("node_modules/.bin").join(tool);
+    root_candidate.exists().then_some(root_candidate)
+}
+
 fn refs_point_to_same_commit(repo_root: &Path, ref_a: &str, ref_b: &str) -> bool {
     let rev = |r: &str| {
         Command::new("git")
@@ -781,16 +954,16 @@ enum PytestCmd {
 }
 
 fn resolve_pytest_cmd(repo_root: &Path) -> Option<PytestCmd> {
-    for rel in [".venv/bin/pytest", "venv/bin/pytest"] {
-        let p = repo_root.join(rel);
-        if p.exists() {
-            return Some(PytestCmd::Direct(p));
-        }
-    }
     for rel in [".venv/bin/python", "venv/bin/python"] {
         let p = repo_root.join(rel);
         if p.exists() {
             return Some(PytestCmd::PythonModule(p));
+        }
+    }
+    for rel in [".venv/bin/pytest", "venv/bin/pytest"] {
+        let p = repo_root.join(rel);
+        if p.exists() {
+            return Some(PytestCmd::Direct(p));
         }
     }
     if Command::new("pytest")
@@ -848,9 +1021,22 @@ fn run_pytest(repo_root: &Path, target: &VerifyTarget, timeout: Duration) -> Sin
         }
     };
 
+    let pythonpath = match std::env::var("PYTHONPATH") {
+        Ok(existing) if !existing.is_empty() => format!("{}:{}", repo_root.display(), existing),
+        _ => repo_root.display().to_string(),
+    };
+
     cmd.current_dir(repo_root)
-        .args(["-p", "no:randomly", "-q", "--tb=short"])
+        .args([
+            "-p",
+            "no:randomly",
+            "-p",
+            "no:cacheprovider",
+            "-q",
+            "--tb=short",
+        ])
         .arg(format!("--junitxml={}", xml_path.display()))
+        .env("PYTHONPATH", pythonpath)
         .env("PYTHONDONTWRITEBYTECODE", "1");
 
     let output = match run_command_with_timeout(&mut cmd, timeout) {
@@ -878,13 +1064,12 @@ fn run_pytest(repo_root: &Path, target: &VerifyTarget, timeout: Duration) -> Sin
 }
 
 fn run_jest(repo_root: &Path, target: &VerifyTarget, timeout: Duration) -> SingleRunOutcome {
-    let jest_bin = repo_root.join("node_modules/.bin/jest");
-    if !jest_bin.exists() {
+    let Some(jest_bin) = resolve_node_bin(repo_root, &target.file_path, "jest") else {
         return SingleRunOutcome::ExternalDependency {
             reason: "jest not found in node_modules/.bin (npx disabled for zero-egress)"
                 .to_string(),
         };
-    }
+    };
 
     let tmp_dir = match tempfile::Builder::new().prefix("proctor-jest-").tempdir() {
         Ok(d) => d,
@@ -901,7 +1086,14 @@ fn run_jest(repo_root: &Path, target: &VerifyTarget, timeout: Duration) -> Singl
     let mut cmd = Command::new(&jest_bin);
     cmd.current_dir(repo_root)
         .arg(&target.file_path)
-        .args(["-t", &pattern, "--json", "--no-coverage", "--silent"])
+        .args([
+            "-t",
+            &pattern,
+            "--json",
+            "--no-coverage",
+            "--no-cache",
+            "--silent",
+        ])
         .arg("--outputFile")
         .arg(&json_path);
 
@@ -930,13 +1122,12 @@ fn run_jest(repo_root: &Path, target: &VerifyTarget, timeout: Duration) -> Singl
 }
 
 fn run_vitest(repo_root: &Path, target: &VerifyTarget, timeout: Duration) -> SingleRunOutcome {
-    let vitest_bin = repo_root.join("node_modules/.bin/vitest");
-    if !vitest_bin.exists() {
+    let Some(vitest_bin) = resolve_node_bin(repo_root, &target.file_path, "vitest") else {
         return SingleRunOutcome::ExternalDependency {
             reason: "vitest not found in node_modules/.bin (npx disabled for zero-egress)"
                 .to_string(),
         };
-    }
+    };
 
     let tmp_dir = match tempfile::Builder::new().prefix("proctor-vitest-").tempdir() {
         Ok(d) => d,
@@ -1074,12 +1265,14 @@ fn parse_junit_xml(xml: &str, process_success: bool) -> Option<SingleRunOutcome>
     if let Some((attrs, body)) = extract_xml_tag(xml, "failure") {
         let raw_type = extract_xml_attr(&attrs, "type").unwrap_or_default();
         let raw_message = extract_xml_attr(&attrs, "message").unwrap_or_default();
-        let message = if !raw_message.is_empty() {
-            decode_xml_entities(&raw_message)
+        let decoded_msg = decode_xml_entities(&raw_message);
+        let decoded_body = decode_xml_entities(&body);
+        let message = if !decoded_msg.trim().is_empty() {
+            first_nonempty_line(&decoded_msg)
         } else {
-            decode_xml_entities(&first_nonempty_line(&body))
+            first_nonempty_line(&decoded_body)
         };
-        let combined = format!("{}\n{}\n{}", raw_type, message, body);
+        let combined = format!("{}\n{}\n{}", raw_type, decoded_msg, decoded_body);
 
         if let Some(ext) = detect_external_dep(&combined) {
             return Some(SingleRunOutcome::ExternalDependency { reason: ext });
@@ -1092,7 +1285,7 @@ fn parse_junit_xml(xml: &str, process_success: bool) -> Option<SingleRunOutcome>
         }
 
         // Strict assertion classification: require AssertionError / Failed / assertion pattern
-        // and reject TypeError / SyntaxError / NameError / KeyError crashes.
+        // and reject TypeError / SyntaxError / NameError / KeyError / RuntimeError crashes.
         let is_non_assertion_crash = matches!(
             raw_type.as_str(),
             "TypeError"
@@ -1101,14 +1294,46 @@ fn parse_junit_xml(xml: &str, process_success: bool) -> Option<SingleRunOutcome>
                 | "NameError"
                 | "KeyError"
                 | "AttributeError"
+                | "ZeroDivisionError"
+                | "ValueError"
+                | "IndexError"
         );
+        let has_non_assertion_prefix = [
+            "TypeError:",
+            "SyntaxError:",
+            "IndentationError:",
+            "NameError:",
+            "KeyError:",
+            "AttributeError:",
+            "ZeroDivisionError:",
+            "ValueError:",
+            "IndexError:",
+            "FileNotFoundError:",
+        ]
+        .iter()
+        .any(|p| {
+            message.starts_with(p)
+                || decoded_body
+                    .lines()
+                    .any(|l| l.trim_start().starts_with("E   ") && l.contains(p))
+        });
+
         let is_assertion = !is_non_assertion_crash
+            && !has_non_assertion_prefix
             && (raw_type == "AssertionError"
                 || raw_type == "Failed"
                 || raw_type.ends_with(".AssertionError")
-                || message.contains("AssertionError")
-                || body.contains("AssertionError")
-                || (raw_type.is_empty() && body.contains("\nE       assert ")));
+                || decoded_msg.contains("AssertionError")
+                || message.starts_with("assert ")
+                || message.starts_with("Failed:")
+                || message.contains("DID NOT RAISE")
+                || decoded_body.contains("AssertionError")
+                || decoded_body.lines().any(|l| {
+                    let trimmed = l.trim_start();
+                    trimmed.starts_with("E   assert ")
+                        || trimmed.starts_with("E   AssertionError")
+                        || trimmed.starts_with("E   Failed:")
+                }));
 
         if is_assertion {
             let err_type = if raw_type.is_empty() {
@@ -1351,7 +1576,12 @@ fn extract_xml_attr(attrs: &str, key: &str) -> Option<String> {
 }
 
 fn decode_xml_entities(s: &str) -> String {
-    s.replace("&quot;", "\"")
+    s.replace("&#10;", "\n")
+        .replace("&#xA;", "\n")
+        .replace("&#xa;", "\n")
+        .replace("&#13;", "\r")
+        .replace("&#9;", "\t")
+        .replace("&quot;", "\"")
         .replace("&apos;", "'")
         .replace("&lt;", "<")
         .replace("&gt;", ">")
@@ -1516,5 +1746,41 @@ mod tests {
         let out = run_command_with_timeout(&mut cmd, Duration::from_millis(150)).unwrap();
         assert!(out.timed_out);
         assert!(!out.success);
+    }
+
+    #[test]
+    fn test_swap_journal_recovery_after_crash() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        Command::new("git")
+            .current_dir(root)
+            .args(["init"])
+            .output()
+            .unwrap();
+        std::fs::create_dir_all(root.join("app/sub")).unwrap();
+        std::fs::write(root.join("app/existing.py"), "head_v1").unwrap();
+        std::fs::write(root.join("app/sub/added.py"), "new_module").unwrap();
+
+        let mut guard = SwapGuard::new(root);
+        guard
+            .backups
+            .insert("app/existing.py".into(), Some(b"head_v1".to_vec()));
+        guard.backups.insert("app/sub/added.py".into(), None);
+        guard.flush_journal().unwrap();
+
+        // Simulate crash (SIGKILL) leaving base state on disk and journal behind
+        std::fs::write(root.join("app/existing.py"), "base_v0").unwrap();
+        std::fs::remove_file(root.join("app/sub/added.py")).unwrap();
+        std::mem::forget(guard);
+
+        assert!(has_pending_swap_backup(root).is_some());
+        let restored = restore_swap_backup(root).unwrap();
+        assert_eq!(restored, 2);
+        assert!(has_pending_swap_backup(root).is_none());
+        assert_eq!(
+            std::fs::read_to_string(root.join("app/existing.py")).unwrap(),
+            "head_v1"
+        );
+        assert!(!root.join("app/sub/added.py").exists());
     }
 }
