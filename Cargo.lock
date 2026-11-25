@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "agent-proctor"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "clap",
@@ -326,7 +326,7 @@ dependencies = [
 
 [[package]]
 name = "proctor-core"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "blake3",
@@ -338,7 +338,7 @@ dependencies = [
 
 [[package]]
 name = "proctor-diff"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "blake3",
@@ -349,7 +349,7 @@ dependencies = [
 
 [[package]]
 name = "proctor-parse"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "blake3",
  "proctor-core",
@@ -362,7 +362,7 @@ dependencies = [
 
 [[package]]
 name = "proctor-probe"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "blake3",
@@ -378,7 +378,7 @@ dependencies = [
 
 [[package]]
 name = "proctor-rules"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "blake3",
  "proctor-core",

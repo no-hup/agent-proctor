@@ -115,7 +115,7 @@ Under `--strict`, any assertion modifications coincident with production code ch
 
 ## Detection Rules & Specifications
 
-For the complete specification of all detection invariants (`PROCTOR-001` through `PROCTOR-007`), see our [Rules Catalog](RULES_CATALOG.md).
+For the complete specification of all detection invariants (`PROCTOR-001` through `PROCTOR-008`), see our [Rules Catalog](RULES_CATALOG.md).
 
 ---
 
