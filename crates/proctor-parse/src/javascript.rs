@@ -2,6 +2,69 @@ use crate::{ParsedAssertion, ParsedMock, ParsedSourceFile, ParsedTest, ParsedTes
 use proctor_core::{AssertionStrength, TestId};
 use tree_sitter::{Node, Parser};
 
+/// Selects the appropriate Tree-sitter grammar for JS, TS, or TSX based on path/flag.
+fn js_language(file_path: &str, is_typescript: bool) -> tree_sitter::Language {
+    if is_typescript {
+        if file_path.to_ascii_lowercase().ends_with(".tsx") {
+            tree_sitter_typescript::language_tsx()
+        } else {
+            tree_sitter_typescript::language_typescript()
+        }
+    } else {
+        tree_sitter_javascript::language()
+    }
+}
+
+/// Checks whether any Tree-sitter `ERROR` or `MISSING` node represents a real syntax error
+/// rather than the tree-sitter-typescript 0.21 TSX quirk on `typeof import("...")` type args.
+fn has_real_syntax_error(root: Node, source: &str, is_typescript: bool) -> bool {
+    if !root.has_error() {
+        return false;
+    }
+    if !is_typescript {
+        return true;
+    }
+    fn walk_errors(node: Node, source: &str) -> bool {
+        if node.is_error() || node.is_missing() {
+            // Check node text or its line window for `typeof import(`
+            let bytes = source.as_bytes();
+            let start = node.start_byte();
+            let end = node.end_byte().min(bytes.len());
+            let line_start = source[..start].rfind('\n').map(|i| i + 1).unwrap_or(0);
+            let line_end = source[end..]
+                .find('\n')
+                .map(|i| end + i)
+                .unwrap_or(source.len());
+            let snippet = &source[line_start..line_end];
+            let prev_line_start = source[..line_start.saturating_sub(1)]
+                .rfind('\n')
+                .map(|i| i + 1)
+                .unwrap_or(0);
+            let next_line_end = if line_end < source.len() {
+                source[line_end + 1..]
+                    .find('\n')
+                    .map(|i| line_end + 1 + i)
+                    .unwrap_or(source.len())
+            } else {
+                line_end
+            };
+            let window = &source[prev_line_start..next_line_end];
+            if !snippet.contains("typeof import(") && !window.contains("typeof import(") {
+                return true;
+            }
+            return false;
+        }
+        let cursor = &mut node.walk();
+        for child in node.children(cursor) {
+            if child.has_error() && walk_errors(child, source) {
+                return true;
+            }
+        }
+        false
+    }
+    walk_errors(root, source)
+}
+
 /// Parses a JavaScript or TypeScript test file into structured tests, assertions, and mocks.
 pub fn parse_javascript_test_file(
     file_path: &str,
@@ -9,11 +72,7 @@ pub fn parse_javascript_test_file(
     is_typescript: bool,
 ) -> Result<ParsedTestFile, String> {
     let mut parser = Parser::new();
-    let lang = if is_typescript {
-        tree_sitter_typescript::language_typescript()
-    } else {
-        tree_sitter_javascript::language()
-    };
+    let lang = js_language(file_path, is_typescript);
 
     parser
         .set_language(&lang)
@@ -24,7 +83,7 @@ pub fn parse_javascript_test_file(
         .ok_or_else(|| "Failed to parse JS/TS source".to_string())?;
 
     let root = tree.root_node();
-    let has_syntax_error = root.has_error();
+    let has_syntax_error = has_real_syntax_error(root, source, is_typescript);
     let mut tests = Vec::new();
     let mut harness_mocks = Vec::new();
     let mut imports = Vec::new();
@@ -55,11 +114,7 @@ pub fn parse_javascript_source_file(
     is_typescript: bool,
 ) -> Result<ParsedSourceFile, String> {
     let mut parser = Parser::new();
-    let lang = if is_typescript {
-        tree_sitter_typescript::language_typescript()
-    } else {
-        tree_sitter_javascript::language()
-    };
+    let lang = js_language(file_path, is_typescript);
 
     parser
         .set_language(&lang)
@@ -70,7 +125,7 @@ pub fn parse_javascript_source_file(
         .ok_or_else(|| "Failed to parse JS/TS source".to_string())?;
 
     let root = tree.root_node();
-    let has_syntax_error = root.has_error();
+    let has_syntax_error = has_real_syntax_error(root, source, is_typescript);
     let mut defined_symbols = Vec::new();
     let mut string_literals = Vec::new();
     let mut symbol_bodies = std::collections::HashMap::new();
@@ -471,5 +526,29 @@ test("charge user", () => {
         let file = parse_javascript_test_file("src/test.js", code, false).unwrap();
         assert_eq!(file.harness_mocks.len(), 1);
         assert_eq!(file.harness_mocks[0].target, "./stripe_client");
+    }
+
+    #[test]
+    fn test_parse_tsx_and_typeof_import_without_false_syntax_error() {
+        let valid_tsx = r#"
+import { describe, expect, it, vi } from "vitest";
+vi.mock("react-i18next", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("react-i18next")>()),
+}));
+describe("Panel", () => {
+    it("renders", () => {
+        const node = <div data-testid="ok">hi</div>;
+        expect(node.props).toEqual({ "data-testid": "ok" });
+    });
+});
+"#;
+        let parsed =
+            parse_javascript_test_file("__tests__/panel.test.tsx", valid_tsx, true).unwrap();
+        assert!(!parsed.has_syntax_error);
+        assert_eq!(parsed.tests.len(), 1);
+
+        let broken_tsx = "function broken( { return <div />; ";
+        let broken = parse_javascript_source_file("src/broken.tsx", broken_tsx, true).unwrap();
+        assert!(broken.has_syntax_error);
     }
 }

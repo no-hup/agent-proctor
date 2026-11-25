@@ -1,5 +1,118 @@
 use colored::*;
-use proctor_core::{Finding, Verdict};
+use proctor_core::{Finding, RuleId, Verdict};
+use std::collections::BTreeMap;
+
+const MAX_GUARD_ROWS: usize = 25;
+const MAX_REPORT_ROWS: usize = 10;
+
+/// Specific human-readable title matching what happened in this finding.
+fn finding_display_title(f: &Finding) -> &'static str {
+    if f.rule_id != RuleId::AssertionLock {
+        return f.rule_id.title();
+    }
+    if f.evidence.starts_with("Deleted test:") {
+        "Test deleted without removing all referenced production code"
+    } else if f.evidence.starts_with("Skipped") {
+        "Test marked skipped / xfailed"
+    } else if f.message.contains("while production code was untouched") {
+        "Test expectation changed with no production changes"
+    } else if f.message.contains("weakened") {
+        "Assertion weakened or removed"
+    } else if f.message.contains("shifted to mirror") {
+        "Test expected value shifted to match new production literal"
+    } else if f.message.contains("could not be parsed") {
+        "File could not be parsed safely"
+    } else {
+        "Assertion changed with no changed target symbol detected"
+    }
+}
+
+/// Strips redundant `<file_path>::` prefixes inside finding messages/details when `Location` already shows the file.
+fn compact_detail(f: &Finding) -> String {
+    let prefix = format!("{}::", f.file_path);
+    f.message
+        .replace(&prefix, "")
+        .replace('|', "\\|")
+        .replace('\n', " ")
+}
+
+struct DisplayGuardEntry<'a> {
+    title: &'a str,
+    code: &'a str,
+    loc: String,
+    test_display: Option<String>,
+    detail: String,
+    evidence: &'a str,
+    id: &'a str,
+}
+
+fn group_guard_entries<'a>(guards: &[&'a Finding]) -> Vec<DisplayGuardEntry<'a>> {
+    let mut entries = Vec::new();
+    let mut deleted_by_file: BTreeMap<&str, Vec<&'a Finding>> = BTreeMap::new();
+    for &f in guards {
+        if f.rule_id == RuleId::AssertionLock && f.evidence.starts_with("Deleted test:") {
+            deleted_by_file
+                .entry(f.file_path.as_str())
+                .or_default()
+                .push(f);
+        } else {
+            let loc = match f.line_number {
+                Some(l) => format!("{}:{}", f.file_path, l),
+                None => f.file_path.clone(),
+            };
+            let prefix = format!("{}::", f.file_path);
+            entries.push(DisplayGuardEntry {
+                title: finding_display_title(f),
+                code: f.rule_id.code(),
+                loc,
+                test_display: f
+                    .test_name
+                    .as_ref()
+                    .map(|t| t.strip_prefix(&prefix).unwrap_or(t).to_string()),
+                detail: compact_detail(f),
+                evidence: &f.evidence,
+                id: &f.id,
+            });
+        }
+    }
+    for (path, group) in &deleted_by_file {
+        if group.len() == 1 {
+            let f = group[0];
+            let loc = match f.line_number {
+                Some(l) => format!("{}:{}", f.file_path, l),
+                None => f.file_path.clone(),
+            };
+            let prefix = format!("{}::", f.file_path);
+            entries.push(DisplayGuardEntry {
+                title: finding_display_title(f),
+                code: f.rule_id.code(),
+                loc,
+                test_display: f
+                    .test_name
+                    .as_ref()
+                    .map(|t| t.strip_prefix(&prefix).unwrap_or(t).to_string()),
+                detail: compact_detail(f),
+                evidence: &f.evidence,
+                id: &f.id,
+            });
+        } else {
+            entries.push(DisplayGuardEntry {
+                title: "Tests deleted without removing all referenced production code",
+                code: RuleId::AssertionLock.code(),
+                loc: (*path).to_string(),
+                test_display: None,
+                detail: format!(
+                    "{} tests deleted in `{}` without removing all referenced production symbols",
+                    group.len(),
+                    path
+                ),
+                evidence: "grouped deleted tests (use --format json for individual fingerprints)",
+                id: group[0].id.as_str(),
+            });
+        }
+    }
+    entries
+}
 
 pub fn print_findings(findings: &[Finding], base_ref: &str) {
     if findings.is_empty() {
@@ -13,23 +126,18 @@ pub fn print_findings(findings: &[Finding], base_ref: &str) {
         return;
     }
 
-    let mut blocks = 0;
-    let mut reviews = 0;
-
-    for f in findings {
-        match f.verdict {
-            Verdict::Block { .. } => blocks += 1,
-            Verdict::Review { .. } => reviews += 1,
-            Verdict::Pass => {}
-        }
-    }
+    let (guards, reports): (Vec<&Finding>, Vec<&Finding>) = findings
+        .iter()
+        .partition(|f| matches!(f.verdict, Verdict::Block { .. }));
+    let blocks = guards.len();
+    let reviews = reports.len();
 
     println!("\n{}", "─".repeat(70).dimmed());
     if blocks > 0 {
         println!(
             "{}",
             format!(
-                "🛑 proctor: BLOCKED ({} violation{}, {} review{})",
+                "🛑 proctor: BLOCKED ({} guard finding{}, {} review{})",
                 blocks,
                 if blocks == 1 { "" } else { "s" },
                 reviews,
@@ -40,7 +148,8 @@ pub fn print_findings(findings: &[Finding], base_ref: &str) {
         );
         println!(
             "{}",
-            "  Specification gaming detected. Changes must not weaken tests to bypass CI.".red()
+            "  Guard-tier test changes detected without matching production deletions or waivers."
+                .red()
         );
     } else {
         println!(
@@ -55,53 +164,82 @@ pub fn print_findings(findings: &[Finding], base_ref: &str) {
         );
         println!(
             "{}",
-            "  Changes weaken test coverage but touch production code. Human signoff required."
+            "  Test assertions or coverage changed alongside production code; review or acknowledge before merge."
                 .yellow()
         );
     }
     println!("{}\n", "─".repeat(70).dimmed());
 
-    for f in findings {
-        let tag = match f.verdict {
-            Verdict::Block { .. } => "BLOCK".bold().on_red(),
-            Verdict::Review { .. } => "REVIEW".bold().on_yellow(),
-            Verdict::Pass => "PASS".green(),
-        };
+    let guard_entries = group_guard_entries(&guards);
+    for entry in guard_entries.iter().take(MAX_GUARD_ROWS) {
+        println!(
+            "  [{}] {} ({})",
+            "BLOCK".bold().on_red(),
+            entry.code.bold(),
+            entry.title.dimmed()
+        );
+        println!("    Location : {}", entry.loc.cyan());
+        if let Some(t) = &entry.test_display {
+            println!("    Test     : {}", t.bold());
+        }
+        println!("    Reason   : {}", entry.detail);
+        println!("    Evidence : {}", entry.evidence.dimmed());
+        println!("    Fingerprint: {}", entry.id.bold());
+        println!(
+            "    {}",
+            format!(
+                "Note: Verify this change matches an intended spec/test update (waive with: proctor: accept {}).",
+                entry.id
+            )
+            .italic()
+            .magenta()
+        );
+        println!();
+    }
+    if guard_entries.len() > MAX_GUARD_ROWS {
+        println!(
+            "  … and {} more guard entries ({} total guard findings; run `proctor scan --format json` for the full list).\n",
+            guard_entries.len() - MAX_GUARD_ROWS,
+            blocks
+        );
+    }
 
+    for f in reports.iter().take(MAX_REPORT_ROWS) {
         let loc = if let Some(line) = f.line_number {
             format!("{}:{}", f.file_path, line)
         } else {
             f.file_path.clone()
         };
+        let prefix = format!("{}::", f.file_path);
 
         println!(
             "  [{}] {} ({})",
-            tag,
+            "REVIEW".bold().on_yellow(),
             f.rule_id.code().bold(),
-            f.rule_id.title().dimmed()
+            finding_display_title(f).dimmed()
         );
         println!("    Location : {}", loc.cyan());
         if let Some(test_name) = &f.test_name {
-            println!("    Test     : {}", test_name.bold());
+            let short = test_name.strip_prefix(&prefix).unwrap_or(test_name);
+            println!("    Test     : {}", short.bold());
         }
-        println!("    Reason   : {}", f.message);
+        println!("    Reason   : {}", compact_detail(f));
         println!("    Evidence : {}", f.evidence.dimmed());
         println!("    Fingerprint: {}", f.id.bold());
-
         if let Verdict::Review { finding_id, .. } = &f.verdict {
             println!(
                 "    Waiver   : Comment on GitHub PR -> {}",
                 format!("proctor: ack {}", finding_id).bold().green()
             );
-        } else if let Verdict::Block { .. } = &f.verdict {
-            println!(
-                "    {}",
-                "Agent note: Do not delete assertions or mock in-repo functions. Fix the underlying bug in production code."
-                    .italic()
-                    .magenta()
-            );
         }
         println!();
+    }
+    if reports.len() > MAX_REPORT_ROWS {
+        println!(
+            "  … and {} more review findings ({} total; run `proctor scan --format json` for the full list).\n",
+            reports.len() - MAX_REPORT_ROWS,
+            reviews
+        );
     }
 
     // Automatically append to $GITHUB_STEP_SUMMARY if running in GitHub Actions
@@ -144,13 +282,13 @@ pub fn write_github_step_summary(
     if blocks > 0 {
         writeln!(
             file,
-            "### 🛑 Status: BLOCKED ({} violation{}, {} review{})\n",
+            "### 🛑 Status: BLOCKED ({} guard finding{}, {} review{})\n",
             blocks,
             if blocks == 1 { "" } else { "s" },
             reviews,
             if reviews == 1 { "" } else { "s" }
         )?;
-        writeln!(file, "> **Warning**: Specification gaming detected. Changes must not weaken tests to bypass CI.\n")?;
+        writeln!(file, "> **Warning**: Guard-tier test changes detected without matching production deletions or waivers.\n")?;
     } else {
         writeln!(
             file,
@@ -158,7 +296,7 @@ pub fn write_github_step_summary(
             reviews,
             if reviews == 1 { "" } else { "s" }
         )?;
-        writeln!(file, "> **Notice**: Changes weaken test coverage but touch production code. Human signoff required.\n")?;
+        writeln!(file, "> **Notice**: Test assertions or coverage changed alongside production code; review or acknowledge before merge.\n")?;
     }
 
     writeln!(
@@ -319,12 +457,33 @@ pub fn render_receipt(diff: &proctor_diff::SemanticDiff, findings: &[Finding]) -
         }
     );
     out += &format!(
-        "| **Modified tests** | {} | {} {} strengthened, {} changed without findings, {} flagged |\n",
-        modified, ok(flagged_mod), strengthened, unflagged, flagged_mod
+        "| **Modified tests** | {} | {} |\n",
+        modified,
+        if modified == 0 {
+            "—".to_string()
+        } else {
+            format!(
+                "{} {} strengthened, {} changed without findings, {} flagged",
+                ok(flagged_mod),
+                strengthened,
+                unflagged,
+                flagged_mod
+            )
+        }
     );
     out += &format!(
-        "| **Deleted tests** | {} | {} {} justified (every production symbol they touch was removed), {} flagged |\n",
-        deleted, ok(deleted_flagged), deleted - deleted_flagged, deleted_flagged
+        "| **Deleted tests** | {} | {} |\n",
+        deleted,
+        if deleted == 0 {
+            "—".to_string()
+        } else {
+            format!(
+                "{} {} justified (every production symbol they touch was removed), {} flagged",
+                ok(deleted_flagged),
+                deleted - deleted_flagged,
+                deleted_flagged
+            )
+        }
     );
     out += &format!(
         "| **Configs & CI gates** | {} | {} |\n",
@@ -384,31 +543,51 @@ pub fn render_receipt(diff: &proctor_diff::SemanticDiff, findings: &[Finding]) -
             r,
             if r == 1 { "" } else { "s" }
         ),
-        (b, _) => format!(
-            "\n**Verdict:** 🔴 {} blocking finding{}.\n",
+        (b, 0) => format!(
+            "\n**Verdict:** 🔴 {} guard finding{} (would block under `--enforce`).\n",
             b,
             if b == 1 { "" } else { "s" }
+        ),
+        (b, r) => format!(
+            "\n**Verdict:** 🔴 {} guard finding{} (would block under `--enforce`), {} review item{}.\n",
+            b,
+            if b == 1 { "" } else { "s" },
+            r,
+            if r == 1 { "" } else { "s" }
         ),
     };
 
     if !findings.is_empty() {
         out += "\n<details><summary>Findings</summary>\n\n| Tier | Rule | Location | Detail |\n|---|---|---|---|\n";
-        // Guard findings always listed in full; Report findings capped so huge PRs stay readable.
-        const MAX_REPORT_ROWS: usize = 10;
         let (guards, reports): (Vec<&Finding>, Vec<&Finding>) =
             findings.iter().partition(|f| f.tier == RuleTier::Guard);
-        for f in guards.iter().chain(reports.iter().take(MAX_REPORT_ROWS)) {
+        let guard_entries = group_guard_entries(&guards);
+        let guard_rows_total = guard_entries.len();
+
+        for entry in guard_entries.iter().take(MAX_GUARD_ROWS) {
+            out += &format!(
+                "| Guard | `{}` | `{}` | {} |\n",
+                entry.code, entry.loc, entry.detail
+            );
+        }
+        for f in reports.iter().take(MAX_REPORT_ROWS) {
             let loc = match f.line_number {
                 Some(l) => format!("{}:{}", f.file_path, l),
                 None => f.file_path.clone(),
             };
-            let detail = f.message.replace('|', "\\|").replace('\n', " ");
             out += &format!(
                 "| {:?} | `{}` | `{}` | {} |\n",
                 f.tier,
                 f.rule_id.code(),
                 loc,
-                detail
+                compact_detail(f)
+            );
+        }
+        if guard_rows_total > MAX_GUARD_ROWS {
+            out += &format!(
+                "\n… and {} more guard entries ({} total guard findings; full list: `proctor scan --format json`).\n",
+                guard_rows_total - MAX_GUARD_ROWS,
+                guards.len()
             );
         }
         if reports.len() > MAX_REPORT_ROWS {
@@ -419,6 +598,7 @@ pub fn render_receipt(diff: &proctor_diff::SemanticDiff, findings: &[Finding]) -
                 rest.len(), files.len(), if files.len() == 1 { "" } else { "s" }
             );
         }
+        out += "\nTo acknowledge a finding on a PR, comment `proctor: ack <id>` (review) or `proctor: accept <id>` (guard waiver); run `proctor scan --format json` for IDs.\n";
         out += "\n</details>\n";
     }
     out += "\n<sub>Static analysis of the diff only; no tests were executed. Dynamic red/green verification is opt-in.</sub>\n";
@@ -663,6 +843,73 @@ mod tests {
         assert!(rows[0].starts_with("| Guard"));
         assert!(
             r.contains("15 more review-tier findings across 3 files"),
+            "{r}"
+        );
+    }
+
+    #[test]
+    fn receipt_records_coevolution_modification_without_review_finding() {
+        let base = HashMap::from([
+            (
+                "app/cart.py".to_string(),
+                "def total(x):\n    return x\n".to_string(),
+            ),
+            (
+                "tests/test_cart.py".to_string(),
+                "def test_total():\n    assert total(10) == 10\n".to_string(),
+            ),
+        ]);
+        let head = HashMap::from([
+            (
+                "app/cart.py".to_string(),
+                "def total(x):\n    return x * 2\n".to_string(),
+            ),
+            (
+                "tests/test_cart.py".to_string(),
+                "def test_total():\n    assert total(10) == 20\n".to_string(),
+            ),
+        ]);
+        let diff = proctor_diff::SemanticDiff::build(&base, &head).unwrap();
+        let findings = proctor_rules::evaluate_rules(
+            &diff,
+            &proctor_core::Policy::default(),
+            &proctor_core::WaiverSet::default(),
+        );
+        assert!(findings.is_empty(), "Expected no findings: {findings:?}");
+        let r = render_receipt(&diff, &findings);
+        assert!(r.contains("1 changed without findings, 0 flagged"), "{r}");
+    }
+
+    #[test]
+    fn receipt_groups_deleted_tests_and_caps_guard_rows() {
+        use proctor_core::{RuleId, RuleTier, Verdict};
+        let mut findings = Vec::new();
+        for file_idx in 0..30 {
+            for t_idx in 0..10 {
+                findings.push(Finding {
+                    id: format!("del_{file_idx}_{t_idx}"),
+                    rule_id: RuleId::AssertionLock,
+                    tier: RuleTier::Guard,
+                    verdict: Verdict::Block {
+                        rule: RuleId::AssertionLock,
+                        evidence: "deleted test".to_string(),
+                    },
+                    file_path: format!("tests/test_f{file_idx:02}.py"),
+                    line_number: None,
+                    test_name: Some(format!("tests/test_f{file_idx:02}.py::test_{t_idx}")),
+                    message: "Test removed".to_string(),
+                    evidence: format!("Deleted test: tests/test_f{file_idx:02}.py::test_{t_idx}"),
+                });
+            }
+        }
+        let empty = HashMap::new();
+        let diff = proctor_diff::SemanticDiff::build(&empty, &empty).unwrap();
+        let r = render_receipt(&diff, &findings);
+        let guard_rows = r.lines().filter(|l| l.starts_with("| Guard")).count();
+        assert_eq!(guard_rows, 25, "{r}");
+        assert!(r.contains("10 tests deleted in `tests/test_f00.py`"), "{r}");
+        assert!(
+            r.contains("5 more guard entries (300 total guard findings"),
             "{r}"
         );
     }

@@ -367,6 +367,21 @@ fn parse_unittest_call(call_node: Node, source: &str) -> Option<ParsedAssertion>
 }
 
 fn parse_pytest_raises(with_node: Node, source: &str) -> Option<ParsedAssertion> {
+    // Only treat `with` blocks that actually assert exceptions/warnings as assertions;
+    // regular context managers (`with open(...)`, `with wire_server(...)`) are setup/resources.
+    let header_end = with_node
+        .child_by_field_name("body")
+        .map(|b| b.start_byte())
+        .unwrap_or_else(|| with_node.end_byte());
+    let header = source.get(with_node.start_byte()..header_end).unwrap_or("");
+    let is_assert_ctx = header.contains("pytest.raises")
+        || header.contains("pytest.warns")
+        || header.contains("assertRaises")
+        || header.contains("assertWarns");
+    if !is_assert_ctx {
+        return None;
+    }
+
     let text = with_node
         .utf8_text(source.as_bytes())
         .ok()?
@@ -375,17 +390,13 @@ fn parse_pytest_raises(with_node: Node, source: &str) -> Option<ParsedAssertion>
     let line = with_node.start_position().row + 1;
 
     let mut referenced_symbols = Vec::new();
-    let mut strength = AssertionStrength::Weak;
-
-    if text.contains("pytest.raises") {
-        if text.contains("match=") {
-            strength = AssertionStrength::Exact;
-        } else if text.contains("Exception") || text.contains("BaseException") {
-            strength = AssertionStrength::Weak;
-        } else {
-            strength = AssertionStrength::Exact;
-        }
-    }
+    let strength = if header.contains("match=") {
+        AssertionStrength::Exact
+    } else if header.contains("Exception") || header.contains("BaseException") {
+        AssertionStrength::Weak
+    } else {
+        AssertionStrength::Exact
+    };
 
     extract_identifiers_and_attrs(with_node, source, &mut referenced_symbols);
 
@@ -471,8 +482,60 @@ fn extract_mock_call(node: Node, source: &str) -> Option<ParsedMock> {
     let fn_child = node.child_by_field_name("function")?;
     let fn_text = fn_child.utf8_text(source.as_bytes()).ok()?;
 
-    if fn_text.contains("patch") || fn_text.ends_with(".setattr") {
+    // Environment-variable mutations are OS boundary config, never in-repo code shadow mocks.
+    if fn_text.ends_with(".setenv")
+        || fn_text.ends_with(".delenv")
+        || fn_text.ends_with(".chdir")
+        || fn_text.ends_with(".syspath_prepend")
+    {
+        return None;
+    }
+
+    let is_mock_call = fn_text == "patch"
+        || fn_text == "patch.object"
+        || fn_text == "patch.dict"
+        || fn_text == "patch.multiple"
+        || fn_text.ends_with(".patch")
+        || fn_text.ends_with(".patch.object")
+        || fn_text.ends_with(".patch.dict")
+        || fn_text.ends_with(".patch.multiple")
+        || fn_text.ends_with(".setattr");
+
+    if is_mock_call {
         let args = node.child_by_field_name("arguments")?;
+        if fn_text == "patch.dict" || fn_text.ends_with(".patch.dict") {
+            let args_text = args.utf8_text(source.as_bytes()).unwrap_or("");
+            let trimmed = args_text.trim_start_matches('(').trim_start();
+            if trimmed.starts_with("os.environ")
+                || trimmed.starts_with("\"os.environ\"")
+                || trimmed.starts_with("'os.environ'")
+            {
+                return None;
+            }
+        }
+        // For `patch.object(Target, "attr")` extract `Target.attr` when first arg is an identifier/attribute.
+        if fn_text == "patch.object" || fn_text.ends_with(".patch.object") {
+            let mut pos_args = Vec::new();
+            let cursor = &mut args.walk();
+            for arg in args.children(cursor) {
+                if arg.is_named() {
+                    pos_args.push(arg);
+                }
+            }
+            if pos_args.len() >= 2 && pos_args[1].kind() == "string" {
+                let obj = pos_args[0].utf8_text(source.as_bytes()).unwrap_or("");
+                let attr = pos_args[1]
+                    .utf8_text(source.as_bytes())
+                    .unwrap_or("")
+                    .trim_matches(|c| c == '\'' || c == '"');
+                if !obj.is_empty() && !attr.is_empty() {
+                    return Some(ParsedMock {
+                        line: node.start_position().row + 1,
+                        target: format!("{}.{}", obj, attr),
+                    });
+                }
+            }
+        }
         let cursor = &mut args.walk();
         for arg in args.children(cursor) {
             if arg.kind() == "string" {
@@ -633,6 +696,68 @@ def test_billing(mocker):
         let test = &file.tests[0];
         assert_eq!(test.mocks.len(), 1);
         assert_eq!(test.mocks[0].target, "app.finance.stripe_client.charge");
+    }
+
+    #[test]
+    fn test_parse_python_env_var_patches_excluded() {
+        let code = r#"
+import os
+from unittest.mock import patch
+
+def test_env(monkeypatch):
+    monkeypatch.setenv("BROWSER_USE_API_KEY", "test")
+    monkeypatch.delenv("ANONYMIZED_TELEMETRY", raising=False)
+    monkeypatch.setattr("app.billing.charge_card", lambda: True)
+    with patch.dict(os.environ, {"BROWSER_USE_API_KEY": "x"}):
+        pass
+    with patch.dict("os.environ", {"OTHER": "y"}):
+        pass
+    assert True
+
+def test_patch_object_and_dict():
+    with patch.object(BillingService, "charge", return_value=True):
+        with patch.dict("app.billing.RATES", {"USD": 1}):
+            assert BillingService.charge() is True
+"#;
+        let file = parse_python_test_file("tests/test_env.py", code).unwrap();
+        assert_eq!(file.tests.len(), 2);
+        let env_mocks = &file.tests[0].mocks;
+        assert_eq!(
+            env_mocks.len(),
+            1,
+            "Expected only setattr mock, got: {env_mocks:?}"
+        );
+        assert_eq!(env_mocks[0].target, "app.billing.charge_card");
+
+        let obj_mocks = &file.tests[1].mocks;
+        assert_eq!(
+            obj_mocks.len(),
+            2,
+            "Expected patch.object and patch.dict mocks, got: {obj_mocks:?}"
+        );
+        assert_eq!(obj_mocks[0].target, "BillingService.charge");
+        assert_eq!(obj_mocks[1].target, "app.billing.RATES");
+    }
+
+    #[test]
+    fn test_non_assertion_with_block_ignored() {
+        let code = r#"
+import pytest
+
+def test_ctx():
+    with open("data.txt") as f:
+        with pytest.raises(ValueError, match="bad"):
+            parse_data(f.read())
+"#;
+        let file = parse_python_test_file("tests/test_ctx.py", code).unwrap();
+        assert_eq!(file.tests.len(), 1);
+        let assertions = &file.tests[0].assertions;
+        assert_eq!(
+            assertions.len(),
+            1,
+            "Only pytest.raises should count as an assertion, got: {assertions:?}"
+        );
+        assert!(assertions[0].text.contains("pytest.raises"));
     }
 
     #[test]

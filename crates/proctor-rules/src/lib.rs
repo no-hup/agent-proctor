@@ -259,28 +259,42 @@ fn evaluate_assertion_lock(diff: &SemanticDiff, policy: &Policy, findings: &mut 
                                 reason
                             ),
                         )
-                    } else {
-                        let msg = if was_weakened {
-                            format!(
-                                "Assertion weakened in test '{}' alongside changes to code it references. Requires reviewer waiver.",
-                                test_name
-                            )
-                        } else {
-                            format!(
-                                "Assertion modified in test '{}' without orphaned symbol justification. Requires reviewer waiver.",
-                                test_name
-                            )
-                        };
+                    } else if was_weakened {
                         (
                             Verdict::Review {
                                 finding_id: id.clone(),
                                 evidence: format!(
-                                    "Assertion modified/dropped: '{}'. Target symbol not deleted.",
+                                    "Assertion weakened/dropped: '{}'. Linked production symbol changed.",
                                     base_assert.text
                                 ),
                             },
                             RuleTier::Report,
-                            msg,
+                            format!(
+                                "Assertion weakened in test '{}' while referenced production code also changed.",
+                                test_name
+                            ),
+                        )
+                    } else if linked {
+                        // Track B calibration: non-weakened assertion updates linked to changed
+                        // production code are benign co-evolution. Surfaced as informational counts
+                        // in the Test-Change Receipt rather than Review alerts.
+                        continue;
+                    } else {
+                        // Unlinked non-weakened value swaps alongside production changes stay
+                        // at Report (Review) so silent value-flip laundering remains flagged.
+                        (
+                            Verdict::Review {
+                                finding_id: id.clone(),
+                                evidence: format!(
+                                    "Assertion modified/dropped: '{}'. No changed referenced production symbol detected.",
+                                    base_assert.text
+                                ),
+                            },
+                            RuleTier::Report,
+                            format!(
+                                "Assertion changed in test '{}' alongside unrelated edits (no changed target symbol detected).",
+                                test_name
+                            ),
                         )
                     };
 
@@ -521,9 +535,12 @@ fn evaluate_shadow_mocks(diff: &SemanticDiff, policy: &Policy, findings: &mut Ve
             .iter()
             .map(|m| m.target.as_str())
             .collect();
+        let mut seen_head_targets: HashSet<&str> = HashSet::new();
 
         for mock in &pair.head_test.mocks {
-            if !base_mock_targets.contains(mock.target.as_str()) {
+            if !base_mock_targets.contains(mock.target.as_str())
+                && seen_head_targets.insert(mock.target.as_str())
+            {
                 let allowed = is_mock_allowed(&mock.target, &policy.allow_mocks);
 
                 if !allowed && is_in_repo_target(&mock.target, &in_repo_symbols, &modules) {
@@ -597,9 +614,12 @@ fn evaluate_shadow_mocks(diff: &SemanticDiff, policy: &Policy, findings: &mut Ve
         .iter()
         .map(|m| m.target.as_str())
         .collect();
+    let mut seen_harness_targets: HashSet<&str> = HashSet::new();
 
     for mock in &diff.head_harness_mocks {
-        if !base_harness_targets.contains(mock.target.as_str()) {
+        if !base_harness_targets.contains(mock.target.as_str())
+            && seen_harness_targets.insert(mock.target.as_str())
+        {
             let allowed = is_mock_allowed(&mock.target, &policy.allow_mocks);
 
             if !allowed && is_in_repo_target(&mock.target, &in_repo_symbols, &modules) {

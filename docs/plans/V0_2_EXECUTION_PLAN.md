@@ -120,29 +120,20 @@
 ```
 
 ### Tasks:
-- [ ] **Task 4.1: Automated Audit Runner Script**
-  - Create `/scripts/compare_audits.sh` that clones/pulls each target repo and runs both binaries over the exact same commit slices:
+- [x] **Task 4.1: Automated Audit Runner Script**
+  - Created `scripts/compare_audits.sh` and `scripts/compare_audits_per_commit.py`, running per-commit JSON `proctor scan` comparisons (`v0.1.0` vs `v0.2.1` vs `v0.2.2`) over identical 100-commit slices for all 5 repos (500 primary commits) plus a disjoint 100-commit `browser-use` holdout (`skip=100`):
     1. `princeton-nlp/SWE-agent` (100 commits)
     2. `aider-AI/aider` (100 commits)
-    3. `OpenHands/OpenHands` (99 commits)
-    4. `BerriAI/litellm` (99 commits)
-    5. `browser-use/browser-use` (100 commits)
-- [ ] **Task 4.2: In-Depth Delta Analysis**
-  - **OpenHands Analysis:**
-    - v0.1.0 baseline: 64.6% clean, 180 test modifications, 13 mocks.
-    - Measure: How many of the 180 flags were eliminated by definition-linkage and rename checks?
-    - How many were genuine assertion weakenings vs. provider interface refactors?
-  - **LiteLLM Analysis:**
-    - v0.1.0 baseline: 55.6% clean, 270 test modifications, 12 mocks.
-    - Measure: Did definition-linkage normalize the baseline above 85%?
-  - **Catch Retention Check:**
-    - Verify that `browser-use` (330 test lines dropped before `1.0.3rc1`) is still caught with 100% precision.
-    - Verify that `aider` (model alias mutation) is still caught.
-- [ ] **Task 4.3: Publish Comparative Evaluation Document**
-  - Write [`docs/audit/V0_1_VS_V0_2_COMPARISON.md`](file:///Users/shaurya/Desktop/moonshot/agent-proctor/docs/audit/V0_1_VS_V0_2_COMPARISON.md) documenting:
-    - Summary comparison table (v0.1.0 vs v0.2.0 clean baselines, noise drops, new catches).
-    - Qualitative assessment: Why v0.2.0 is superior for human maintainers.
-    - DelTest classification: Percentage of deletions that were obsolete vs. redundant vs. genuine cheats.
+    3. `OpenHands/OpenHands` (100 commits)
+    4. `BerriAI/litellm` (100 commits)
+    5. `browser-use/browser-use` (100 primary + 100 holdout commits)
+- [x] **Task 4.2: In-Depth Delta Analysis & Hand-Labeling**
+  - Diffed findings by Blake3 `finding.id` across `v0.1.0`, `v0.2.1`, and `v0.2.2`.
+  - Hand-labeled 140 stratified `v0.2.1` findings in `docs/audit/labels_v0_2_1.csv` and 50 disjoint `browser-use` holdout findings in `docs/audit/labels_v0_2_2_holdout.csv`.
+  - Fixed `.tsx` grammar (`language_tsx()` + `typeof import(...)` error filter), excluded `monkeypatch.setenv`/`delenv`/`patch.dict(os.environ)` from `ShadowMock`, and made linked `!was_weakened` co-evolution informational while keeping `!was_weakened && !linked` at `Report` (`Review`).
+  - Reduced yellow rates on `OpenHands` (37% -> 7.0%) and `litellm` (13% -> 5.0%), lifted surviving labeled `ShadowMock::guard` accuracy to 13/13 (primary) and 7/7 (holdout), and kept zero Guard regressions on `aider` (6/6 block commits, 11/11 findings).
+- [x] **Task 4.3: Publish Comparative Evaluation Document**
+  - Updated `docs/audit/V0_1_VS_V0_2_COMPARISON.md` with verified 3-way commit tables, holdout validation, finding-ID delta root causes, and two-column per-stratum precision tables.
 
 ---
 
