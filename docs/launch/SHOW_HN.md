@@ -1,4 +1,4 @@
-# Show HN: Agent-Proctor – Deterministic Test-Change Receipts and base-commit verification for PRs
+# Show HN: Agent-Proctor (`v0.2.3`) – Deterministic Test-Change Receipts and base-commit verification for PRs
 
 **GitHub (Core CLI & Engine):** https://github.com/no-hup/agent-proctor  
 **GitHub (Action):** https://github.com/no-hup/proctor-action  
@@ -11,10 +11,10 @@
 
 Hey HN,
 
-I built **`agent-proctor`** (`proctor`), a deterministic, zero-egress CLI and GitHub Action written in Rust that solves a practical PR review problem—especially as AI coding agents open more pull requests:
+I built **`agent-proctor`** (`proctor`), a deterministic, zero-egress CLI and GitHub Action written in Rust that solves two practical review problems when humans and coding agents open pull requests:
 
-1. **What did this PR actually change in the tests?** `proctor scan` generates a compact **Test-Change Receipt** right in `$GITHUB_STEP_SUMMARY` and SARIF—showing added tests (and whether they assert exact values), modified assertions (strengthened vs. weakened vs. co-evolved), deleted tests, CI/runner config edits, blanket suppressions, and internal mocks.
-2. **Do those new/edited tests actually catch a bug on `base`?** Opt-in **`proctor verify`** (or `verify: true` in CI) temporarily runs the PR's added or modified tests against the `base` commit and `head` commit so you know whether a test reproduces a failure (`Catches change`) rather than passing on untouched code.
+1. **What did this PR actually change in `tests/`?** `proctor scan` posts a compact **Test-Change Receipt** right in `$GITHUB_STEP_SUMMARY`, inline PR file annotations, and SARIF—listing added tests (and whether they assert exact values), paired `old → new` pre-existing assertion diffs, weakened/guarded assertions, fixture skips, in-repo mocks, and CI/config loosenings.
+2. **Do the new/edited tests catch a bug on `base`—without breaking existing test contracts on `head`?** Opt-in **`proctor verify`** (or `verify: true` in CI) runs added/modified tests 2x on `head` and 2x on `base` (`Catches change` vs. `Passes on both`), **and** runs the `base` version of any modified test against `head` production code so a rewritten assertion (`== 1` → `== 2`) can't quietly pass off a broken contract as a bugfix (`Changed passing contract`).
 
 Everything runs offline under Apache-2.0 with **zero LLMs and zero network dependencies**.
 
@@ -22,36 +22,25 @@ Everything runs offline under Apache-2.0 with **zero LLMs and zero network depen
 
 ### Why Default to Observe Mode (`enforce: false`) + Receipts?
 
-Most developer tools pitch Day-1 CI blocking, and then get uninstalled within a week because static AST rules flag legitimate maintenance (updating an assertion when an upstream model/endpoint changes, cleaning up stale fixtures, adding OS skip guards).
+Static AST rules alone cannot distinguish a legitimate behavior update (`Mod(5, 3) == 1` → `== 2` alongside an intentional change to `mod()`) from an agent silently altering expectations—because **both produce the exact same git diff**.
 
-We measured our own engine carefully before calling it "ready":
+We measured `agent-proctor` on two independent datasets (full methodology, scripts, and labels are in the repo):
 
-* Evaluated across **500 commits (`n=100` each)** of `aider-AI/aider`, `princeton-nlp/SWE-agent`, `browser-use/browser-use`, `OpenHands/OpenHands`, and `BerriAI/litellm`, plus a disjoint **100-commit holdout window** on `browser-use` (`skip=100`).
-* Full per-commit methodology and CSV labels are checked into the repo: [`docs/audit/V0_1_VS_V0_2_COMPARISON.md`](../audit/V0_1_VS_V0_2_COMPARISON.md).
+1. **600 Human/OSS Historical Commits** ([`docs/audit/V0_1_VS_V0_2_COMPARISON.md`](../audit/V0_1_VS_V0_2_COMPARISON.md)):
+   * 500 primary commits (`n=100` each across `aider-AI/aider`, `princeton-nlp/SWE-agent`, `browser-use/browser-use`, `OpenHands/OpenHands`, `BerriAI/litellm`) + 100 disjoint `browser-use` holdout commits (`skip=100`).
+   * Observe-mode yellow (`Review`) rate: `0.0%–13.0%` (`aider` `96/0/4`, `SWE-agent` `99/1/0`, `OpenHands` `89/7/4`, `litellm` `83/5/12`, `browser-use` `70/8/22`, holdout `72/13/15`).
+   * Hand-labeled by a single labeler across one holdout repo: **Guard** true reviewer attention is **`42.6%` primary (`23/54`) / `46.4%` holdout (`13/28`)** (`ShadowMock` `13/13` primary, `6/6` holdout; deleted tests and maintenance account for the rest). That’s why **`enforce: false` (Observe Mode) is the default** on human PRs.
 
-#### `v0.2.2` Historical Replay Matrix (`proctor scan --base <sha>^ --head <sha>`)
-
-| Repository | Window (`n=100`) | Pass / Review / Block | Yellow (`Review`) Rate | Notes |
-| :--- | :--- | :---: | :---: | :--- |
-| `aider-AI/aider` | `5b0f6ce9..5dc9490b` | `96 / 0 / 4` | `0.0%` | Clean human & agent baseline |
-| `princeton-nlp/SWE-agent` | `d747e536..3ea751c0` | `99 / 1 / 0` | `1.0%` | Clean baseline |
-| `OpenHands/OpenHands` | `e1b8b60f..c11b5fc6` | `89 / 7 / 4` | `7.0%` | Down from `56 / 33 / 11` in `v0.1.0` |
-| `BerriAI/litellm` | `13101c8a..34dea88f` | `83 / 5 / 12` | `5.0%` | Down from `75 / 13 / 12` in `v0.1.0` |
-| `browser-use/browser-use` | `c426bd89..94784c1f` | `70 / 8 / 22` | `8.0%` | Down from `61 / 17 / 22` in `v0.1.0` |
-| `browser-use` holdout (`skip=100`) | `commits 101..200` | `72 / 13 / 15` | `13.0%` | Disjoint window |
-
-We also hand-labeled sampled findings (single labeler, one holdout repo), explicitly separating **"fired per AST rule"** from **"actually worth a human reviewer's attention"**:
-
-* **Guard tier (surviving samples, `n=54` primary / `n=28` holdout):** `74.1%` primary (`71.4%` holdout) fired strictly as specified, and **`42.6%` primary (`23/54`) / `46.4%` holdout (`13/28`) warranted reviewer attention** (`ShadowMock` was `13/13` primary and `6/6` holdout; test deletions and untouched-production edits carry the remaining legitimate maintenance noise).
-* **Report tier (surviving samples, `n=19` primary / `n=20` holdout):** kept intentionally sensitive on unlinked constant/assertion changes (`5.3%` primary / `0.0%` holdout reviewer attention) so quiet single-value flips in agent PRs don't slip through silently while keeping the yellow rate at `0–13%`.
-
-**Design takeaway:** Roughly half of static Guard flags on real human commits are legitimate maintenance. So **`enforce: false` (Observe Mode) is the default**. Every PR still gets a clear Test-Change Receipt and optional `proctor: ack <id>` / `proctor: accept <id>` reviewer sign-off, without breaking builds—and when you want proof rather than heuristics, **`proctor verify`** executes the changed tests on `base` vs. `head`.
+2. **120 Reconstructed GPT-5 ImpossibleBench Rollouts** ([`docs/audit/AGENT_CHEAT_BENCH.md`](../audit/AGENT_CHEAT_BENCH.md)):
+   * Replayed real GPT-5 tool-call trajectories from [ImpossibleBench](https://arxiv.org/abs/2510.20270) (`conflicting` `n=39`, `oneoff` `n=31` net test-edits with valid `base` AST, plus `original` `n=50` solvable controls):
+   * **Default Mode (Human PR CI):** `0 / 50` (`0.0%`) false flags on `original`; `22 / 70` (`31.4%`) flagged by static Guard+Report (`16/39` conflicting, `6/31` oneoff), while **Test-Change Receipts surfaced `55 / 70` (`78.6%` overall, `30/31` = `96.8%` on `oneoff`)** with paired `old → new` diffs.
+   * **Policy Mode (`--protect-existing-tests` for agent loops/evals):** Treating pre-existing assertions on `base` as immutable raised Guard+Report flags to **`34 / 70` (`48.6%`; `21/39` = `53.8%` Guard on `conflicting`, `13/31` = `41.9%` on `oneoff`)** while keeping **`0 / 50` (`0.0%`)** false flags on `original`.
 
 ---
 
-### What a Clean Test-Change Receipt Looks Like
+### What a PR Sees in Observe Mode
 
-Running `proctor scan` on `OpenHands/OpenHands` `#19954` (`d56c1ab`):
+Clean PR (`OpenHands/OpenHands` `#19954`):
 
 ```markdown
 ### 📋 Test-Change Receipt (agent-proctor)
@@ -68,25 +57,16 @@ Running `proctor scan` on `OpenHands/OpenHands` `#19954` (`d56c1ab`):
 **Verdict:** 🟢 No findings in analyzed test files.
 ```
 
-When something *is* modified, deleted, suppressed (`skip` / `# noqa` / `@ts-ignore`), or loosened in CI (`|| true`, `continue-on-error: true`, pytest/jest config edits), the receipt surfaces a bounded summary table (grouped per file for test deletions, capped at 25 Guard / 10 Report rows) plus clickable SARIF annotations.
+And when an existing assertion is modified alongside production code, the receipt appends a compact paired table (`<details><summary>Changed pre-existing assertions (N)</summary>`) showing the exact `old → new` diff (`assert Mod(5, 3) == 1` → `assert Mod(5, 3) == 2`), while `proctor-action@v1` bubbles counts and file/line annotations up to the GitHub Actions Checks view under strictly `contents: read`.
 
 ---
 
 ### How It Works Under the Hood
 
-1. **Tree-sitter AST Lattice (Python, JS/JSX, TS/TSX):** Compares old vs. new test functions across an assertion strength lattice ($\text{Vacuous} < \text{Weak} < \text{Exact}$), detects constant/value flips with equal assertion counts, and catches `pytest.raises` / Jest `toThrow` removals.
-2. **Definition-Linkage & Orphan Resolution (`PROCTOR-001`):** Co-evolution where an existing test's linked production symbol changed *without* weakening assertions counts silently as normal co-evolution (`changed without findings` / `strengthened`) instead of spamming reviewers. Deleting an entire test is only clean when every referenced production symbol was removed.
-3. **In-Repo Shadow Mock Detection (`PROCTOR-002`):** Allows external boundary mocks (`requests`, DB clients, `os.environ` / `monkeypatch.setenv`), while flagging mocks targeting in-repo symbols defined inside the repository.
-4. **Config, CI & Suppression Integrity (`PROCTOR-003`..`008`):** Flags `|| true`, `; exit 0`, `continue-on-error: true`, runner threshold relaxation, skip markers added alongside production edits, and blanket linter/type suppressions.
-5. **Opt-In Red/Green Base Verification (`proctor verify`):** Safely swaps changed test targets onto `base` inside `.git/proctor-swap-backup.json` journaled recovery (refuses `verify: true` under `pull_request_target` for safety) and reports whether new tests actually fail on the unfixed base commit.
-
----
-
-### Security & Zero-Egress Design
-
-* **Zero Network Capabilities:** `proctor` compiles with zero HTTP/network crates (verified by `test_zero_network_dependencies_in_lockfile` in `cargo test`). It cannot phone home or exfiltrate secrets.
-* **Least-Privilege CI Permissions:** Runs cleanly with `contents: read` and `pull-requests: read` (plus `security-events: write` only if uploading SARIF).
-* **SHA-256 Checksummed Releases:** Official release tarballs ship with `.sha256` digests under `no-hup/agent-proctor/releases`.
+1. **Tree-sitter AST Lattice (Python, JS/JSX, TS/TSX):** Evaluates assertions across $\text{Vacuous} < \text{Weak} < \text{Exact}$, catches equal-count constant flips, conditional `if` / early-return / `pytest.raises` wrapping around existing assertions, fixture/helper `pytest.skip` injections, and softening inside `def assert_*` helpers.
+2. **Definition-Linkage & Orphan Resolution (`PROCTOR-001`):** Benign co-evolution (`!was_weakened && linked`) surfaces quietly as `old → new` diffs in the receipt instead of warning spam; deleting a test is clean only when all referenced production symbols were removed.
+3. **In-Repo Shadow Mock, CI & Suppression Integrity (`PROCTOR-002`..`008`):** Permits external boundary mocks (`requests`, `os.environ`) while flagging mocks of in-repo symbols, `|| true` / `; exit 0` / `continue-on-error: true`, runner threshold loosening, and blanket linter/type suppressions.
+4. **Opt-In Red/Green + Reverse Contract Verification (`proctor verify`):** Uses `.git/proctor-swap-backup.json` journaled recovery (`pull_request_target` refused) to check both whether changed tests fail on `base` *and* whether unmodified `base` tests still pass on `head`.
 
 ---
 
@@ -105,6 +85,10 @@ on: [pull_request]
 jobs:
   proctor:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+      security-events: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -116,4 +100,4 @@ jobs:
           enforce: false
 ```
 
-Apache-2.0 licensed. Would love feedback on where the AST lattice misses sneaky agent workarounds—or where test-change receipts save you review cycles.
+Apache-2.0 licensed. Would love feedback from both PR reviewers and eval/agent harness builders on where this catches real issues vs. where edge cases remain.
