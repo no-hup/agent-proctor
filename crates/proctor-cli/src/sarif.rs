@@ -75,8 +75,8 @@ pub fn generate_sarif(findings: &[Finding]) -> serde_json::Value {
                 "tool": {
                     "driver": {
                         "name": "agent-proctor",
-                        "version": "0.1.0",
-                        "informationUri": "https://github.com/agent-proctor/agent-proctor",
+                        "version": env!("CARGO_PKG_VERSION"),
+                        "informationUri": "https://github.com/no-hup/agent-proctor",
                         "rules": sarif_rules
                     }
                 },

@@ -1,11 +1,11 @@
 # `agent-proctor` Growth & Outreach Scratchbook
 
 ## Now (Read First — Updated 2026-11-26)
-- **Current Focus:** Close the 3 real GPT-5 evasion gaps found in our ImpossibleBench audit (`v0.2.3`), get 3 warm coding-agent developers using the local hook + Observe Action (`proctor-action@v1` now emits PR file annotations & verdict banner under read-only perms), then ship Show HN.
+- **Current Focus:** Ship `v0.2.3` (Policy Mode `--protect-existing-tests`, reverse `verify` contract check, `old -> new` receipt diffs, and `proctor-action@v1` banner annotations), onboard 3 warm coding-agent developers for a 7-day dogfood, then decide Show HN.
 - **Active Bets:**
-  1. **Fix 3 Real Evasion Gaps (`v0.2.3`, due 2026-11-28):** Replaying `120` real GPT-5 ImpossibleBench trajectories (`AGENT_CHEAT_BENCH.md`) exposed `0/50` FPs on `original`, `55/70` (`78.6%`) Test-Change Receipt visibility, and `20/70` (`28.6%`) Guard+Report flags — because GPT-5 hid `pytest.skip` inside fixtures (`sphinx-8269`), wrapped assertions in `if` (`xarray-7393`), wrapped custom `assert_*` in `pytest.raises` (`xarray-3151`), and co-edited linked constants. Fixing fixture skips + `if`/raises-wrapping turns `v0.2.3` into a much stronger catch rate without touching human co-evolution.
+  1. **`v0.2.3` Deterministic Stack (verified 2026-11-26):** Replaying `120` GPT-5 `ImpossibleBench` trajectories ([AGENT_CHEAT_BENCH.md](../audit/AGENT_CHEAT_BENCH.md)) confirmed `0/50` FPs on `original`, `55/70` (`78.6%`) Receipt visibility (`old -> new` assertions now printed), `22/70` (`31.4%`) default static flags, and **`34/70` (`48.6%`, `33` Guard)** under `--protect-existing-tests` Policy Mode with **`0/50` FPs**. Reverse `verify` pass prevents `verify` from vouching `Catches change` when a modified test breaks its own `base` contract on `head`.
   2. **3 Warm Design Partners (check-in Day 7):** Onboard 3 Claude Code/Cursor developers directly (local hook + Observe Action); ask two Day-7 questions (*"Did you read a receipt?"* / *"Did it change anything?"*).
-  3. **Batch 1 Closed Silently:** Gmail check (`in:anywhere`) across all accounts confirmed **0 replies** to Nov 17 emails (`aider`, `SWE-agent`, `OpenHands`, `litellm`). Per our no-double-email rule, leaving Batch 1 closed without sending unprompted follow-ups.
+  3. **Batch 1 Closed Silently:** Gmail check (`in:anywhere`) across all accounts confirmed **0 replies** to Nov 17 emails (`aider`, `SWE-agent`, `OpenHands`, `litellm`). Leaving Batch 1 closed without sending unprompted follow-ups.
 - **Blocked / Parked:** Cold mega-OSS outreach (`browser-use`, Tier-1) is **PARKED**; Show HN (`docs/launch/SHOW_HN.md`) waits for `v0.2.3` ImpossibleBench re-score + Day-7 warm partner signal.
 - **Measurable North-Star:** Weeks active partner repos keep Observe/hook enabled + Day-7 partner feedback (not GitHub stars).
 

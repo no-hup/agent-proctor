@@ -70,6 +70,9 @@ pub struct VerifyTarget {
     pub file_path: String,
     pub scope_hierarchy: Vec<String>,
     pub test_name: String,
+    /// True if this target existed on base and was modified in head (false for newly added tests).
+    #[serde(default)]
+    pub is_modified: bool,
 }
 
 impl VerifyTarget {
@@ -119,6 +122,10 @@ pub struct TestVerificationResult {
     pub runner: String,
     #[serde(skip_serializing, default)]
     pub duration_ms: u64,
+    /// If a modified test's old (base) version fails with an assertion error on head code,
+    /// captures that error message so `verify` never silently vouches for a changed contract.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub old_contract_broken_on_head: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -688,6 +695,7 @@ pub fn verify_tests_with_options(
                 },
                 runner: runner_label(runner, &target.file_path, repo_root),
                 duration_ms: 0,
+                old_contract_broken_on_head: None,
             });
         }
         return Ok(results);
@@ -708,6 +716,7 @@ pub fn verify_tests_with_options(
                 },
                 runner: runner_label(runner, &target.file_path, repo_root),
                 duration_ms: 0,
+                old_contract_broken_on_head: None,
             });
         }
         return Ok(results);
@@ -902,8 +911,70 @@ pub fn verify_tests_with_options(
         }
     }
 
-    // 6. Explicitly restore host working tree before constructing results
+    // 6. Explicitly restore host working tree before reverse check / constructing results
     swap_guard.restore();
+
+    // 5b. Reverse contract check: for modified pre-existing tests that appear Discriminating,
+    // verify whether the old (base) test passes or fails against head production code.
+    let mut old_contract_broken: Vec<Option<String>> = vec![None; active_targets.len()];
+    let mod_disc_indices: Vec<usize> = active_targets
+        .iter()
+        .enumerate()
+        .filter(|(idx, t)| {
+            t.is_modified
+                && matches!(
+                    final_statuses[*idx],
+                    Some(VerificationStatus::Discriminating { .. })
+                )
+        })
+        .map(|(idx, _)| idx)
+        .collect();
+
+    if !mod_disc_indices.is_empty() && total_start.elapsed() < TOTAL_VERIFY_BUDGET {
+        let mut rev_guard = SwapGuard::new(repo_root);
+        let non_test_paths: Vec<String> = all_changed
+            .iter()
+            .filter(|p| !is_test_or_support_file(p))
+            .cloned()
+            .collect();
+        let mod_test_files: Vec<String> = mod_disc_indices
+            .iter()
+            .map(|&idx| active_targets[idx].file_path.clone())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+
+        let staged_head = if let Some(h_ref) = head_ref {
+            if !refs_point_to_same_commit(repo_root, h_ref, "HEAD") {
+                rev_guard.swap_paths_to_ref(h_ref, &non_test_paths).is_ok()
+            } else {
+                true
+            }
+        } else {
+            true
+        };
+
+        if staged_head
+            && rev_guard
+                .swap_paths_to_ref(base_ref, &mod_test_files)
+                .is_ok()
+        {
+            for &idx in &mod_disc_indices {
+                if total_start.elapsed() >= TOTAL_VERIFY_BUDGET {
+                    break;
+                }
+                if let SingleRunOutcome::AssertionFailure { message, .. } = run_single_test(
+                    repo_root,
+                    resolved_runners[idx],
+                    &active_targets[idx],
+                    per_run_timeout,
+                ) {
+                    old_contract_broken[idx] = Some(message);
+                }
+            }
+        }
+        rev_guard.restore();
+    }
 
     for (idx, target) in active_targets.iter().enumerate() {
         let elapsed = target_timings[idx].elapsed().as_millis() as u64;
@@ -918,6 +989,7 @@ pub fn verify_tests_with_options(
             status,
             runner: runner_name_str(resolved_runners[idx]),
             duration_ms: elapsed,
+            old_contract_broken_on_head: old_contract_broken[idx].take(),
         });
     }
 
@@ -930,6 +1002,7 @@ pub fn verify_tests_with_options(
             },
             runner: runner_label(runner, &target.file_path, repo_root),
             duration_ms: 0,
+            old_contract_broken_on_head: None,
         });
     }
 

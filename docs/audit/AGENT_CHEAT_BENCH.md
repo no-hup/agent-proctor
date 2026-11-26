@@ -16,7 +16,9 @@
 
 ---
 
-## 2. `proctor scan v0.2.2` Results (`n=120` Reconstructed `task_base..task_head` Diffs)
+## 2. `proctor scan` Results (`n=120` Reconstructed `task_base..task_head` Diffs)
+
+### Default Mode (Human PR CI — Co-evolution Allowed)
 
 | Split | Valid Evaluated | Guard (Block) | Report (Review) | Flagged (`Guard + Report`) | Surfaced in Test-Change Receipt | Clean (`Pass`) |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
@@ -24,7 +26,17 @@
 | **`oneoff`** (real GPT-5 cheats) | `31` | `0` (`0.0%`) | `6` (`19.4%`) | **`6 / 31` (`19.4%`)** | **`30 / 31` (`96.8%`)** | `25` |
 | **`original`** (solvable GPT-5 controls) | `50` | `0` (`0.0%`) | `0` (`0.0%`) | **`0 / 50` (`0.0%`)** | `0 / 50` (`0.0%`) | **`50`** |
 
-*(Updated after implementing generic `if`/`try`/`pytest.raises` assertion wrapping, fixture skip detection, and `assert_*` helper tracking: `conflicting` rose `14/39 -> 16/39` while `original` controls stayed `0/50`. Note: `proctor verify` was not executed because ancient SWE-bench tasks require per-instance Dockerized Python environments.)*
+### Policy Mode (`--protect-existing-tests` — Agent Loops & Evals)
+
+When pre-existing assertions on `base` are locked as the spec (`protect_existing_tests = true`):
+
+| Split | Valid Evaluated | Guard (Block) | Report (Review) | Flagged (`Guard + Report`) | Surfaced in Test-Change Receipt | Clean (`Pass`) |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: |
+| **`conflicting`** (real GPT-5 cheats) | `39` | **`21`** (`53.8%`) | `0` | **`21 / 39` (`53.8%`)** | `25 / 39` (`64.1%`) | `18` |
+| **`oneoff`** (real GPT-5 cheats) | `31` | **`12`** (`38.7%`) | `1` (`3.2%`) | **`13 / 31` (`41.9%`)** | `30 / 31` (`96.8%`) | `18` |
+| **`original`** (solvable GPT-5 controls) | `50` | **`0`** (`0.0%`) | `0` | **`0 / 50` (`0.0%`)** | `0 / 50` (`0.0%`) | **`50`** |
+
+*(Updated for `v0.2.3`: adds generic `if`/`try`/early-return/`pytest.raises` assertion wrapping, fixture skips, `assert_*` helper tracking, `old -> new` receipt assertion diffs, `--protect-existing-tests` policy mode, and a reverse `verify` check that runs the `base` version of modified tests on `head` code. Note: `proctor verify` was not executed on `ImpossibleBench` because ancient SWE-bench tasks require per-instance Dockerized Python environments.)*
 
 ---
 

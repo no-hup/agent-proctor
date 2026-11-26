@@ -48,6 +48,10 @@ struct Cli {
     /// Append the markdown Test-Change Receipt to this file (e.g. $GITHUB_STEP_SUMMARY)
     #[arg(long)]
     receipt: Option<PathBuf>,
+
+    /// Policy mode (for agent loops/evals): treat pre-existing assertions on base as immutable
+    #[arg(long)]
+    protect_existing_tests: bool,
 }
 
 #[derive(Subcommand)]
@@ -79,6 +83,10 @@ enum Commands {
         /// Append the markdown Test-Change Receipt to this file (e.g. $GITHUB_STEP_SUMMARY)
         #[arg(long)]
         receipt: Option<PathBuf>,
+
+        /// Policy mode (for agent loops/evals): treat pre-existing assertions on base as immutable
+        #[arg(long)]
+        protect_existing_tests: bool,
     },
     /// Dynamically verify that added/modified tests catch regressions by executing them on the base code
     Verify {
@@ -205,6 +213,7 @@ fn main() -> Result<()> {
             experimental_probe,
             verify,
             receipt,
+            protect_existing_tests,
         }) => run_scan(
             &base,
             head.as_deref(),
@@ -214,6 +223,7 @@ fn main() -> Result<()> {
             experimental_probe,
             verify,
             receipt,
+            protect_existing_tests,
         ),
         Some(Commands::Verify {
             base,
@@ -261,6 +271,7 @@ fn main() -> Result<()> {
             cli.experimental_probe,
             cli.verify,
             cli.receipt,
+            cli.protect_existing_tests,
         ),
     }
 }
@@ -275,11 +286,15 @@ fn run_scan(
     experimental_probe: bool,
     verify: bool,
     receipt_path: Option<PathBuf>,
+    protect_existing_tests: bool,
 ) -> Result<()> {
     // 1. Immutably anchor policy to the base ref
     let mut policy = git::load_policy_from_base(base);
     if strict {
         policy.strict_mode = true;
+    }
+    if protect_existing_tests {
+        policy.protect_existing_tests = true;
     }
 
     // 2. Get changed files from git using two-dot diff
@@ -490,6 +505,7 @@ fn extract_verify_targets(diff: &SemanticDiff) -> Vec<proctor_probe::VerifyTarge
             file_path: t.id.file_path.clone(),
             scope_hierarchy: t.id.scope_hierarchy.clone(),
             test_name: t.id.name.clone(),
+            is_modified: false,
         };
         if seen.insert(target.canonical_id()) {
             targets.push(target);
@@ -505,6 +521,7 @@ fn extract_verify_targets(diff: &SemanticDiff) -> Vec<proctor_probe::VerifyTarge
             file_path: p.head_test.id.file_path.clone(),
             scope_hierarchy: p.head_test.id.scope_hierarchy.clone(),
             test_name: p.head_test.id.name.clone(),
+            is_modified: true,
         };
         if seen.insert(target.canonical_id()) {
             targets.push(target);
@@ -956,7 +973,7 @@ fn run_audit(limit: usize, format: OutputFormat, label_path: Option<PathBuf>) ->
             println!("> **Deterministic Local Verification (Zero Egress, Sub-50ms Tree-sitter):**");
             println!("> Run locally on your clone in <3s with zero network egress or telemetry:");
             println!("> ```bash");
-            println!("> curl -sSfL https://github.com/no-hup/proctor-action/releases/latest/download/proctor-$(uname -s | tr '[:upper:]' '[:lower:]')-$(uname -m).tar.gz | tar -xz && ./proctor audit --limit {}", limit);
+            println!("> curl -sSfL https://github.com/no-hup/agent-proctor/releases/latest/download/proctor-$(uname -s | tr '[:upper:]' '[:lower:]')-$(uname -m).tar.gz | tar -xz && ./proctor audit --limit {}", limit);
             println!("> ```");
         }
     }

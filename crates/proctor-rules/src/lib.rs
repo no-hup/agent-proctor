@@ -283,7 +283,10 @@ fn evaluate_assertion_lock(diff: &SemanticDiff, policy: &Policy, findings: &mut 
 
                     // Linkage: only a change to code this test actually references can explain
                     // a changed assertion. An unrelated production edit does not.
-                    let guard_reason = if !has_production_changes {
+                    // In `protect_existing_tests` policy mode, pre-existing assertions are the spec.
+                    let guard_reason = if policy.protect_existing_tests {
+                        Some("under protect_existing_tests policy")
+                    } else if !has_production_changes {
                         Some("while production code was untouched")
                     } else if was_weakened && !linked {
                         Some("while none of the production code it references changed")

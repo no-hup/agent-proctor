@@ -120,7 +120,7 @@ def load_hodoscope(cache_dir: str, split: str):
     return json.load(open(local, encoding="utf-8"))["summaries"]
 
 
-def eval_split(proctor_bin: str, cache_dir: str, split: str, limit: int | None):
+def eval_split(proctor_bin: str, cache_dir: str, split: str, limit: int | None, extra_args: list[str] | None = None):
     rows_map = load_rows(split)
     summaries = load_hodoscope(cache_dir, split)
     by_t = {}
@@ -249,17 +249,19 @@ def eval_split(proctor_bin: str, cache_dir: str, split: str, limit: int | None):
             subprocess.run(["git", "commit", "-q", "-m", "th", "--allow-empty"], cwd=tmp, check=True)
 
             valid_eval += 1
+            cmd_json = [proctor_bin, "scan", "--base", "task_base", "--head", "task_head", "--format", "json"] + (extra_args or [])
             jout = json.loads(
                 subprocess.run(
-                    [proctor_bin, "scan", "--base", "task_base", "--head", "task_head", "--format", "json"],
+                    cmd_json,
                     cwd=tmp,
                     capture_output=True,
                     text=True,
                     check=False,
                 ).stdout
             )
+            cmd_md = [proctor_bin, "scan", "--base", "task_base", "--head", "task_head", "--format", "markdown"] + (extra_args or [])
             mout = subprocess.run(
-                [proctor_bin, "scan", "--base", "task_base", "--head", "task_head", "--format", "markdown"],
+                cmd_md,
                 cwd=tmp,
                 capture_output=True,
                 text=True,
@@ -292,11 +294,13 @@ def main():
     ap.add_argument("--proctor", default="target/release/proctor")
     ap.add_argument("--cache-dir", default="/tmp/impossiblebench-check")
     ap.add_argument("--orig-limit", type=int, default=50)
+    ap.add_argument("--protect-existing-tests", action="store_true")
     args = ap.parse_args()
     proctor_bin = os.path.abspath(args.proctor)
+    extra = ["--protect-existing-tests"] if args.protect_existing_tests else []
     os.makedirs(args.cache_dir, exist_ok=True)
     for split, lim in (("conflicting", None), ("oneoff", None), ("original", args.orig_limit)):
-        eval_split(proctor_bin, args.cache_dir, split, lim)
+        eval_split(proctor_bin, args.cache_dir, split, lim, extra)
 
 
 if __name__ == "__main__":

@@ -259,6 +259,10 @@ pub struct Policy {
     pub skip_demote_to_review: bool,
     #[serde(default)]
     pub review_mode: ReviewMode,
+    /// When true (agent-loop / eval policy mode), treat pre-existing assertions on base
+    /// as the immutable spec: any non-orphaned modification or deletion becomes Guard.
+    #[serde(default)]
+    pub protect_existing_tests: bool,
 }
 
 fn default_true() -> bool {
@@ -282,6 +286,7 @@ impl Default for Policy {
             strict_mode: false,
             skip_demote_to_review: true,
             review_mode: ReviewMode::default(),
+            protect_existing_tests: false,
         }
     }
 }

@@ -870,3 +870,99 @@ test('broken test', () => {
         .unwrap()
         .contains("Dependencies changed"));
 }
+
+#[cfg(unix)]
+#[test]
+fn test_cli_protect_existing_tests_and_reverse_verify_contract_check() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let repo_path = temp_dir.path();
+    setup_repo(repo_path);
+    install_python_pytest_runner(repo_path, None);
+
+    fs::create_dir_all(repo_path.join("app")).unwrap();
+    fs::create_dir_all(repo_path.join("tests")).unwrap();
+    fs::write(repo_path.join("app/__init__.py"), "").unwrap();
+    fs::write(
+        repo_path.join("app/math.py"),
+        "def add(a, b):\n    return a + b\n",
+    )
+    .unwrap();
+    fs::write(
+        repo_path.join("tests/test_math.py"),
+        "from app.math import add\n\ndef test_add():\n    assert add(2, 3) == 5\n",
+    )
+    .unwrap();
+    fs::write(repo_path.join(".gitignore"), ".venv/\n").unwrap();
+
+    let run = |args: &[&str]| {
+        let out = Command::new("git")
+            .current_dir(repo_path)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {:?} failed", args);
+    };
+    run(&["add", "."]);
+    run(&["commit", "-m", "Base commit"]);
+
+    // Modify BOTH linked prod code AND pre-existing test expectation
+    fs::write(
+        repo_path.join("app/math.py"),
+        "def add(a, b):\n    return a + b + 94\n",
+    )
+    .unwrap();
+    fs::write(
+        repo_path.join("tests/test_math.py"),
+        "from app.math import add\n\ndef test_add():\n    assert add(2, 3) == 99\n",
+    )
+    .unwrap();
+
+    let proctor_bin = env!("CARGO_BIN_EXE_proctor");
+    let receipt_path = repo_path.join("receipt.md");
+
+    // 1. Default mode: passes exit 0, emits old->new assertion change + reverse verify contract note
+    let out_default = Command::new(proctor_bin)
+        .current_dir(repo_path)
+        .args([
+            "scan",
+            "--base",
+            "HEAD",
+            "--verify",
+            "--receipt",
+            receipt_path.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out_default.status.success(),
+        "Default linked co-evolution must exit 0"
+    );
+    let receipt = fs::read_to_string(&receipt_path).unwrap();
+    assert!(
+        receipt.contains("Changed pre-existing assertions (1)"),
+        "Receipt must list changed pre-existing assertions: {}",
+        receipt
+    );
+    assert!(
+        receipt.contains("assert add(2, 3) == 5` → `assert add(2, 3) == 99"),
+        "Receipt must show exact old->new pair: {}",
+        receipt
+    );
+    assert!(
+        receipt.contains("Changed passing contract"),
+        "Verify receipt must flag old assertion failing on head code: {}",
+        receipt
+    );
+
+    // 2. Policy mode (`--protect-existing-tests`): hard Guard block (exit 2)
+    let out_protect = Command::new(proctor_bin)
+        .current_dir(repo_path)
+        .args(["scan", "--base", "HEAD", "--protect-existing-tests"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        out_protect.status.code(),
+        Some(2),
+        "Policy mode must block modified pre-existing assertion even when prod changed"
+    );
+}

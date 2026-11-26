@@ -406,6 +406,7 @@ pub fn render_receipt(diff: &proctor_diff::SemanticDiff, findings: &[Finding]) -
     let added_no_exact = diff.new_tests.iter().filter(|t| exact(t) == 0).count();
 
     let (mut strengthened, mut flagged_mod, mut unflagged) = (0, 0, 0);
+    let mut changed_assertions: Vec<(String, String)> = Vec::new();
     for p in diff
         .paired_tests
         .iter()
@@ -417,6 +418,44 @@ pub fn render_receipt(diff: &proctor_diff::SemanticDiff, findings: &[Finding]) -
             strengthened += 1;
         } else {
             unflagged += 1;
+        }
+
+        let base_set: HashSet<&str> = p
+            .base_test
+            .assertions
+            .iter()
+            .map(|a| a.text.as_str())
+            .collect();
+        let head_set: HashSet<&str> = p
+            .head_test
+            .assertions
+            .iter()
+            .map(|a| a.text.as_str())
+            .collect();
+        let removed: Vec<&str> = p
+            .base_test
+            .assertions
+            .iter()
+            .map(|a| a.text.as_str())
+            .filter(|t| !head_set.contains(t))
+            .collect();
+        let added_a: Vec<&str> = p
+            .head_test
+            .assertions
+            .iter()
+            .map(|a| a.text.as_str())
+            .filter(|t| !base_set.contains(t))
+            .collect();
+        let test_label = p.head_test.id.canonical_name();
+        for (idx, old_txt) in removed.iter().enumerate() {
+            let old_s = old_txt.replace('|', "\\|").replace('\n', " ");
+            let diff_str = if let Some(new_txt) = added_a.get(idx) {
+                let new_s = new_txt.replace('|', "\\|").replace('\n', " ");
+                format!("`{}` → `{}`", old_s, new_s)
+            } else {
+                format!("removed `{}`", old_s)
+            };
+            changed_assertions.push((test_label.clone(), diff_str));
         }
     }
     let modified = strengthened + flagged_mod + unflagged;
@@ -601,6 +640,23 @@ pub fn render_receipt(diff: &proctor_diff::SemanticDiff, findings: &[Finding]) -
         out += "\nTo acknowledge a finding on a PR, comment `proctor: ack <id>` (review) or `proctor: accept <id>` (guard waiver); run `proctor scan --format json` for IDs.\n";
         out += "\n</details>\n";
     }
+
+    if !changed_assertions.is_empty() {
+        out += &format!(
+            "\n<details><summary>Changed pre-existing assertions ({})</summary>\n\n| Test | Assertion Change |\n|---|---|\n",
+            changed_assertions.len()
+        );
+        for (test_label, change) in changed_assertions.iter().take(10) {
+            out += &format!("| `{}` | {} |\n", test_label, change);
+        }
+        if changed_assertions.len() > 10 {
+            out += &format!(
+                "\n… and {} more changed assertions.\n",
+                changed_assertions.len() - 10
+            );
+        }
+        out += "\n</details>\n";
+    }
     out += "\n<sub>Static analysis of the diff only; no tests were executed. Dynamic red/green verification is opt-in.</sub>\n";
     out
 }
@@ -642,7 +698,15 @@ pub fn print_verification_results(results: &[proctor_probe::TestVerificationResu
                 );
                 println!("    Runner  : {} ({}ms)", r.runner.cyan(), r.duration_ms);
                 println!("    Status  : Passed 2x on head, failed 2x on base with assertion error");
-                println!("    Details : {}\n", reason.dimmed());
+                println!("    Details : {}", reason.dimmed());
+                if let Some(old_err) = &r.old_contract_broken_on_head {
+                    println!(
+                        "    {} Old (base) assertion fails on head code: {}",
+                        "⚠️  CONTRACT CHANGED:".bold().yellow(),
+                        old_err.yellow()
+                    );
+                }
+                println!();
             }
             VerificationStatus::MissingOnBase { error } => {
                 missing += 1;
@@ -713,15 +777,21 @@ pub fn render_verification_receipt(results: &[proctor_probe::TestVerificationRes
     let mut non_discriminating = 0;
     let mut broken = 0;
     let mut inconclusive = 0;
+    let mut contract_broken_on_head = 0;
 
     for r in results {
         let (verdict_str, details_str) = match &r.status {
             VerificationStatus::Discriminating { reason } => {
                 discriminating += 1;
-                (
-                    "🛡️ **Catches change**",
-                    reason.replace('|', "\\|").replace('\n', " "),
-                )
+                let mut detail = reason.replace('|', "\\|").replace('\n', " ");
+                if let Some(old_err) = &r.old_contract_broken_on_head {
+                    contract_broken_on_head += 1;
+                    detail.push_str(&format!(
+                        " (⚠️ old assertion fails on head: {})",
+                        old_err.replace('|', "\\|").replace('\n', " ")
+                    ));
+                }
+                ("🛡️ **Catches change**", detail)
             }
             VerificationStatus::MissingOnBase { error } => {
                 missing += 1;
@@ -774,6 +844,12 @@ pub fn render_verification_receipt(results: &[proctor_probe::TestVerificationRes
     );
     if broken > 0 {
         out += &format!("- ❌ **Broken:** {} (failed on head)\n", broken);
+    }
+    if contract_broken_on_head > 0 {
+        out += &format!(
+            "- ⚠️ **Changed passing contract:** {} (base version of modified test fails on head code)\n",
+            contract_broken_on_head
+        );
     }
     if inconclusive > 0 {
         out += &format!(
