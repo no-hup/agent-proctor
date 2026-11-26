@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="840" height="430" viewBox="0 0 840 430" role="img" aria-label="proctor scan terminal demo showing Test-Change Receipt and assertion diff">
+  <rect width="840" height="430" rx="12" fill="#0d1117" stroke="#30363d" stroke-width="1.5"/>
+  <!-- Window bar -->
+  <rect width="840" height="36" rx="12" fill="#161b22"/>
+  <rect y="24" width="840" height="12" fill="#161b22"/>
+  <circle cx="22" cy="18" r="6" fill="#ff5f56"/>
+  <circle cx="42" cy="18" r="6" fill="#ffbd2e"/>
+  <circle cx="62" cy="18" r="6" fill="#27c93f"/>
+  <text x="420" y="23" text-anchor="middle" fill="#8b949e" font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace" font-size="13">proctor scan --base main --format markdown  (142ms · 0 LLM calls · 0 network)</text>
+
+  <!-- Terminal text -->
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace" font-size="13.5">
+    <text x="24" y="68" fill="#7ee787">$</text>
+    <text x="40" y="68" fill="#e6edf3">proctor scan --base main</text>
+
+    <text x="24" y="102" fill="#f0f6fc" font-weight="bold">Test-Change Receipt (agent-proctor)</text>
+    <text x="24" y="124" fill="#8b949e">──────────────────────────────────────────────────────────────────────────────</text>
+
+    <text x="24" y="150" fill="#ff7b72" font-weight="bold">GUARD  PROCTOR-001</text>
+    <text x="195" y="150" fill="#e6edf3">tests/test_billing.py:42</text>
+    <text x="44" y="170" fill="#ffa198">Assertion weakened (Exact → Weak): `assert total == 199` → `assert total &gt; 0`</text>
+
+    <text x="24" y="202" fill="#ff7b72" font-weight="bold">GUARD  PROCTOR-004</text>
+    <text x="195" y="202" fill="#e6edf3">.github/workflows/ci.yml:29</text>
+    <text x="44" y="222" fill="#ffa198">CI gate loosened: `pytest -q` → `pytest -q || true`</text>
+
+    <text x="24" y="254" fill="#d29922" font-weight="bold">INFO   Contract Diff</text>
+    <text x="195" y="254" fill="#e6edf3">tests/test_rate_limit.py:18  (linked to src/limiter.py)</text>
+    <text x="44" y="274" fill="#e3b341">old: assert mod_quota(5, 3) == 1</text>
+    <text x="44" y="294" fill="#7ee787">new: assert mod_quota(5, 3) == 2</text>
+
+    <text x="24" y="328" fill="#8b949e">──────────────────────────────────────────────────────────────────────────────</text>
+    <text x="24" y="354" fill="#e6edf3">Summary: 1 added test (exact) · 2 modified assertions · 1 CI loosening · 0 mocks</text>
+    <text x="24" y="382" fill="#ff7b72" font-weight="bold">Verdict: BLOCK (exit 2) — 2 Guard findings</text>
+    <text x="380" y="382" fill="#8b949e">(Observe Mode: posts PR receipt with exit 0)</text>
+    <text x="24" y="408" fill="#79c0ff">Run `proctor verify --base main` to test if new tests actually fail on base.</text>
+  </g>
+</svg>

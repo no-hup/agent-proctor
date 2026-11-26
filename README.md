@@ -1,21 +1,67 @@
 # `agent-proctor` (`proctor`)
 
-> **Prove your new tests fail without the fix and pass with it — and ensure existing test contracts stay intact.**  
-> Zero-egress, deterministic CLI & GitHub Action for Python (`pytest`) and JavaScript/TypeScript (`Jest`, `Vitest`).
+Deterministic PR receipts for test changes — zero LLM cost, zero code egress.
 
 [![CI](https://github.com/no-hup/agent-proctor/actions/workflows/ci.yml/badge.svg)](https://github.com/no-hup/agent-proctor/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/no-hup/agent-proctor)](https://github.com/no-hup/agent-proctor/releases/latest)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
 
----
+![proctor scan terminal demo](assets/demo.svg)
 
-## Why `proctor`?
+## Install
 
-When a bugfix PR (whether written by a teammate or a coding agent like Claude Code, Cursor, or Devin) adds a test and turns CI green, reviewers still have to guess two things:
+```bash
+# macOS / Linux prebuilt binary (zero-egress, <2s)
+OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+ARCH=$(uname -m | sed 's/arm64/aarch64/')
+curl -sSfL "https://github.com/no-hup/agent-proctor/releases/latest/download/proctor-${OS}-${ARCH}.tar.gz" | tar -xz && sudo mv proctor /usr/local/bin/
+```
 
-1. **Does the new test actually catch the bug?** Or would it pass even on `main` without the fix?
-2. **Did existing tests stay just as strong?** Or did assertions get loosened, mocked out, skipped, or runner configs relaxed?
+Or build from source with Cargo:
 
-`proctor` answers both cleanly with zero LLMs and zero network calls: static diff checks are deterministic (`<200ms`), and `verify` runs real tests repeatedly (`2x head`, `2x base`) to filter out flakes.
+```bash
+cargo install --git https://github.com/no-hup/agent-proctor proctor-cli
+```
+
+Or drop **Observe Mode** into GitHub Actions (posts PR receipts without failing CI):
+
+```yaml
+- uses: no-hup/proctor-action@v1
+  with:
+    base-ref: ${{ github.event.pull_request.base.sha }}
+    head-ref: ${{ github.event.pull_request.head.sha }}
+    enforce: false
+```
+
+## Why
+
+When a PR (human or AI-authored) turns CI green, reviewers still have to verify that assertions weren't weakened, tests weren't deleted or skipped, and CI gates weren't loosened (`|| true`, `@ts-nocheck`).
+
+| Approach | Speed | LLM / Egress | What it catches vs. misses |
+|---|---|---|---|
+| **LLM PR reviewers** | Slow (10–60s) | API cost + sends code | Non-deterministic; misses subtle test edits in large diffs |
+| **Coverage gates** | Fast | None | Checks line execution, not assertion strength (`assert x > 0` still covers 100%) |
+| **Mutation testing** (`mutmut`, Stryker) | Minutes–hours | None | Thorough, but too slow for every PR or local agent loop |
+| **`agent-proctor`** | **`<200ms` static** | **None (offline)** | Tree-sitter AST test-change receipts + optional `verify` base-vs-head swap |
+
+**What it is not:** `proctor` is not an LLM reviewer and static AST rules cannot infer task intent when production code and an expected constant change together—which is why Observe Mode (`enforce: false`) surfaces `old -> new` diffs quietly instead of blocking valid refactors.
+
+## Usage
+
+Run static diff analysis against `main` (supports Python `pytest` and JS/TS `Jest`, `Vitest`):
+
+```bash
+proctor scan --base main --format markdown
+```
+
+Example output (`$GITHUB_STEP_SUMMARY` / CLI):
+
+```markdown
+### Test-Change Receipt (agent-proctor)
+- Added tests: 2 (all contain exact-value assertions)
+- Modified assertions: 1 (`assert Mod(5, 3) == 1` -> `assert Mod(5, 3) == 2`)
+- Deleted tests: 0 | Internal mocks: 0 | CI/config loosenings: 0
+```
 
 ---
 
@@ -56,23 +102,7 @@ When you run `proctor scan --base main` (under 200ms, pure Tree-sitter AST diffi
 - Keeps deleted tests clean when every referenced production symbol was removed or renamed.
 - Flags assertion weakening, unexpected shadow mocks of changed code, dropped `@pytest.mark.parametrize` cases, snapshot truncation, config strictness loosening (`tsconfig.json`, `ruff.toml`, `eslint`), blanket file-level suppressions (`@ts-nocheck`, bare `eslint-disable`), and CI workflow disabling (`|| true`).
 - Writes clean Markdown PR summaries via `--receipt $GITHUB_STEP_SUMMARY` and standard SARIF 2.1.0 via `--sarif proctor-results.sarif`.
-
----
-
-## 5-Second Quickstart
-
-```bash
-cargo install --path crates/proctor-cli
-
-# Verify newly added or edited tests against main
-proctor verify --base main
-
-# Fast static diff check + Markdown summary
-proctor scan --base origin/main --format markdown
-
-# Static scan + dynamic verification together
-proctor scan --base origin/main --verify
-```
+- Use `--protect-existing-tests` in autonomous agent loops or eval harnesses to treat pre-existing assertions on `base` as an immutable spec.
 
 ---
 
@@ -124,7 +154,9 @@ See [proctor-action](https://github.com/no-hup/proctor-action) for pinned SHA-25
 - **[Rules & Configuration Reference](RULES_CATALOG.md)** *(in `proctor-action`)*: Full specification of rule codes, `proctor.toml`, and waivers.
 - **[Architecture Decision Records](docs/DECISIONS.md)**: Rationale behind zero-LLM verification, linkage analysis, and waiver isolation.
 - **[Track C Live Verification Matrix](docs/audit/TRACK_C_MATRIX.md)**: Verified outcomes across live `uv`/`pytest`, editable `src/` installs, `Jest`, `Vitest`, and crash recovery.
+- **[GPT-5 ImpossibleBench Evaluation](docs/audit/AGENT_CHEAT_BENCH.md)**: Replay results across 120 GPT-5 trajectories (`0/50` FPs on clean solves, `78.6%` receipt visibility).
 
-## License
+## Contributing & License
 
+Contributions welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).  
 Apache-2.0. See [LICENSE](LICENSE).

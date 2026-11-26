@@ -73,7 +73,9 @@ And when an existing assertion is modified alongside production code, the receip
 ### Try It Locally
 
 ```bash
-curl -sSfL https://github.com/no-hup/agent-proctor/releases/latest/download/proctor-$(uname -s | tr '[:upper:]' '[:lower:]')-$(uname -m).tar.gz | tar -xz && ./proctor audit --limit 50
+OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+ARCH=$(uname -m | sed 's/arm64/aarch64/')
+curl -sSfL "https://github.com/no-hup/agent-proctor/releases/latest/download/proctor-${OS}-${ARCH}.tar.gz" | tar -xz && ./proctor audit --limit 50
 ```
 
 Or drop Observe Mode into GitHub Actions:
