@@ -370,6 +370,7 @@ fn evaluate_assertion_lock(diff: &SemanticDiff, policy: &Policy, findings: &mut 
         }
 
         // 1b. Anti-Drift (Mirror Check): Check if modified expected literal was mirrored in production code
+        let mut seen_mirrors = std::collections::HashSet::new();
         for head_assert in &head_test.assertions {
             if let Some(expected_lit) = &head_assert.expected_literal {
                 // If this is a new literal not present in base test assertions
@@ -378,7 +379,7 @@ fn evaluate_assertion_lock(diff: &SemanticDiff, policy: &Policy, findings: &mut 
                     .iter()
                     .any(|a| a.expected_literal.as_deref() == Some(expected_lit));
 
-                if !in_base_asserts {
+                if !in_base_asserts && seen_mirrors.insert(expected_lit.clone()) {
                     // Check if it was newly added as a literal in any head source file
                     for (src_path, head_src) in &diff.head_sources {
                         let base_src_lits = diff
@@ -396,17 +397,32 @@ fn evaluate_assertion_lock(diff: &SemanticDiff, policy: &Policy, findings: &mut 
                                 &test_name,
                                 expected_lit,
                             );
+                            let ev = format!(
+                                "Expected literal '{}' shifted and mirrors newly added production literal in {}",
+                                expected_lit, src_path
+                            );
+                            let (tier, verdict) = if policy.protect_existing_tests {
+                                (
+                                    RuleTier::Guard,
+                                    Verdict::Block {
+                                        rule: RuleId::AssertionLock,
+                                        evidence: ev,
+                                    },
+                                )
+                            } else {
+                                (
+                                    RuleTier::Report,
+                                    Verdict::Review {
+                                        finding_id: id.clone(),
+                                        evidence: ev,
+                                    },
+                                )
+                            };
                             findings.push(Finding {
                                 id,
                                 rule_id: RuleId::AssertionLock,
-                                tier: RuleTier::Guard,
-                                verdict: Verdict::Block {
-                                    rule: RuleId::AssertionLock,
-                                    evidence: format!(
-                                        "Expected literal '{}' shifted and mirrors newly added production literal in {}",
-                                        expected_lit, src_path
-                                    ),
-                                },
+                                tier,
+                                verdict,
                                 file_path: head_test.id.file_path.clone(),
                                 line_number: Some(head_assert.line),
                                 test_name: Some(test_name.clone()),
@@ -416,6 +432,7 @@ fn evaluate_assertion_lock(diff: &SemanticDiff, policy: &Policy, findings: &mut 
                                 ),
                                 evidence: head_assert.text.clone(),
                             });
+                            break;
                         }
                     }
                 }
@@ -1812,5 +1829,38 @@ def assert_node(node, expected):
             "Conditional weakening inside assert_* helper must trigger finding: {:?}",
             findings
         );
+    }
+
+    #[test]
+    fn test_mirror_check_deduplicates_and_respects_policy_mode() {
+        let base = std::collections::HashMap::from([
+            ("tests/test_ui.py".to_string(), "def test_screen():\n    assert get_screen() == 'tide-moon'\n".to_string()),
+            ("src/a.py".to_string(), "def get_screen(): return 'tide-moon'\n".to_string()),
+            ("src/b.py".to_string(), "SCREEN = 'tide-moon'\n".to_string()),
+        ]);
+        let head = std::collections::HashMap::from([
+            ("tests/test_ui.py".to_string(), "def test_screen():\n    assert get_screen() == 'tide-lamp'\n".to_string()),
+            ("src/a.py".to_string(), "def get_screen(): return 'tide-lamp'\n".to_string()),
+            ("src/b.py".to_string(), "SCREEN = 'tide-lamp'\n".to_string()),
+        ]);
+        let diff = SemanticDiff::build(&base, &head).unwrap();
+
+        let default_findings = evaluate_rules(&diff, &Policy::default(), &WaiverSet::default());
+        let mirror_default: Vec<_> = default_findings
+            .iter()
+            .filter(|f| f.message.contains("shifted to mirror"))
+            .collect();
+        assert_eq!(mirror_default.len(), 1, "Must emit once per (test, literal): {:?}", mirror_default);
+        assert_eq!(mirror_default[0].tier, RuleTier::Report, "Default mode should be Report, not Guard");
+
+        let mut pol = Policy::default();
+        pol.protect_existing_tests = true;
+        let policy_findings = evaluate_rules(&diff, &pol, &WaiverSet::default());
+        let mirror_policy: Vec<_> = policy_findings
+            .iter()
+            .filter(|f| f.message.contains("shifted to mirror"))
+            .collect();
+        assert_eq!(mirror_policy.len(), 1);
+        assert_eq!(mirror_policy[0].tier, RuleTier::Guard, "Policy mode should escalate mirror to Guard");
     }
 }

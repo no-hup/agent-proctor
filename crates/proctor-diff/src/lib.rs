@@ -218,6 +218,45 @@ impl SemanticDiff {
             }
         }
 
+        // Pass 3: Same-file, same-scope symbol rematch (when a test is renamed AND its
+        // assertions co-evolve). Paired tests still go through PROCTOR-001's assertion lattice,
+        // so gutting/weakening a renamed test remains flagged.
+        for (b_idx, b_test) in all_base_tests.iter().enumerate() {
+            if matched_base_indices.contains(&b_idx) || b_test.body_symbols.is_empty() {
+                continue;
+            }
+            let mut best_match: Option<(usize, f64)> = None;
+            for (h_idx, h_test) in all_head_tests.iter().enumerate() {
+                if matched_head_indices.contains(&h_idx)
+                    || h_test.assertions.is_empty()
+                    || b_test.id.file_path != h_test.id.file_path
+                    || b_test.id.scope_hierarchy != h_test.id.scope_hierarchy
+                {
+                    continue;
+                }
+                let b_syms: HashSet<&str> =
+                    b_test.body_symbols.iter().map(String::as_str).collect();
+                let h_syms: HashSet<&str> =
+                    h_test.body_symbols.iter().map(String::as_str).collect();
+                let shared = b_syms.intersection(&h_syms).count();
+                let union = b_syms.union(&h_syms).count();
+                if shared >= 1 && union > 0 {
+                    let jaccard = shared as f64 / union as f64;
+                    if jaccard >= 0.50 && best_match.map_or(true, |(_, s)| jaccard > s) {
+                        best_match = Some((h_idx, jaccard));
+                    }
+                }
+            }
+            if let Some((h_idx, _)) = best_match {
+                paired_tests.push(TestPair {
+                    base_test: b_test.clone(),
+                    head_test: all_head_tests[h_idx].clone(),
+                });
+                matched_base_indices.insert(b_idx);
+                matched_head_indices.insert(h_idx);
+            }
+        }
+
         // Unmatched base tests are deleted
         let deleted_tests: Vec<ParsedTest> = all_base_tests
             .into_iter()
@@ -628,5 +667,20 @@ class User:
         assert!(!is_test_file("app/contestation.py"));
         assert!(!is_test_file("src/special.ts"));
         assert!(!is_test_file("lib/inspector.js"));
+    }
+
+    #[test]
+    fn test_same_file_rename_with_coevolved_assertion_pairs() {
+        let base = HashMap::from([(
+            "src/fog.test.ts".to_string(),
+            "describe('fog', () => {\n  it('eases from 255 to 0', () => {\n    expect(fogValueAt(1000, 999)).toBe(255);\n  });\n});\n".to_string(),
+        )]);
+        let head = HashMap::from([(
+            "src/fog.test.ts".to_string(),
+            "describe('fog', () => {\n  it('eases from lift start value to 0', () => {\n    expect(fogValueAt(1000, 999)).toBe(FOG_START);\n  });\n});\n".to_string(),
+        )]);
+        let diff = SemanticDiff::build(&base, &head).unwrap();
+        assert!(diff.deleted_tests.is_empty(), "Renamed test should not be in deleted_tests");
+        assert_eq!(diff.paired_tests.len(), 1);
     }
 }
