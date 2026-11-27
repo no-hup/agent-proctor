@@ -1,17 +1,22 @@
-# CLAUDE.md — Claude Code Project Guidelines
+# CLAUDE.md — Claude Code Contributor Guidelines
 
-Welcome to `agent-proctor`! This repository is designed to be fully compatible with autonomous coding agents and Anthropic's Claude Code.
+Welcome to `agent-proctor`! We actively welcome autonomous coding agents and human contributors using Anthropic's Claude Code.
+
+Because `agent-proctor` is an anticheat and test-integrity engine, our standards for code rigor are exceptionally high. An agent's greatest superpower is tireless verification—we expect every contributor agent to act as its own adversarial reviewer and execute comprehensive pre-flight verification before opening a pull request.
+
+---
 
 ## ⚡ Essential Commands
 
-Run all commands from the repository root:
+Execute all commands from the repository root:
 
 - **Check Compilation:** `cargo check --workspace`
-- **Run All Tests:** `cargo test --workspace` (must pass 80+ tests with 0 failures)
+- **Run Workspace Tests:** `cargo test --workspace` (must pass 80+ tests with 0 failures)
 - **Compile Release Binary:** `cargo build --release`
 - **Zero-Network Invariant Test:** `cargo test --test zero_network_verification`
 - **Golden Corpus Anticheat Walk:** `cargo test --test corpus_tests`
-- **Linter Check:** `cargo clippy --workspace --all-targets -- -D warnings`
+- **Zero-Warning Linter Check:** `cargo clippy --workspace --all-targets -- -D warnings`
+- **Self-Proctoring Diff Check:** `cargo run --bin proctor -- scan --base origin/main`
 
 ---
 
@@ -29,18 +34,32 @@ crates/
 
 ---
 
-## 🛡️ Non-Negotiable Rules & Invariants
+## 🛡️ Non-Negotiable Invariants
 
-1. **Zero LLMs in the Loop:** Never add LLM API calls, prompt strings, or non-deterministic heuristics to verification rules. All analysis must be 100% deterministic and reproducible via Tree-sitter AST diffing.
+1. **Zero LLMs in the Verification Loop:** Never add LLM API calls, prompt strings, or non-deterministic heuristics to verification rules. All analysis must be 100% deterministic and reproducible via Tree-sitter AST diffing.
 2. **Zero Network Dependencies:** Never add crates that introduce network, HTTP, or telemetry dependencies. The lockfile must remain zero-network (`cargo test --test zero_network_verification` must always pass).
 3. **Sub-200ms Static Latency:** `proctor scan` runs in git hooks and CI pipelines; keep static passes fast (<50ms).
-4. **Tight Boundaries:** Do not perform unrequested refactorings or alter unrelated files. Only edit the crates specified in the task issue.
+4. **Strict Diff Hygiene:** Do not perform unrequested refactorings or alter unrelated files. Only edit the crates specified in the task issue.
+
+---
+
+## 🔬 The 5-Point Mandatory Pre-Flight Battery
+
+Before opening any PR, an agent must execute and satisfy every item in this battery:
+
+1. **Clean Linting:** `cargo clippy --workspace --all-targets -- -D warnings` exits 0 with zero warnings.
+2. **Full Regression Suite:** `cargo test --workspace` passes with 0 failures.
+3. **Paired Test Proof:** If modifying or adding syntax parsing or rules, you **must** supply both:
+   - A positive test case proving the new syntax/rule is caught or parsed.
+   - A negative test case proving clean code produces **zero false-positive findings**.
+4. **Self-Proctoring Gate:** Run `cargo run --bin proctor -- scan --base origin/main`. Your own diff must evaluate to `🟢 PASS` with zero unexpected findings.
+5. **Diff Audit:** Run `git diff --stat` and verify that **only** files strictly necessary for the objective were touched.
 
 ---
 
 ## 📋 Pull Request Protocol
 
-1. Write tests for any new syntax parsing, diffing logic, or rule calibrations.
-2. Verify that `cargo test --workspace` passes cleanly.
-3. Check `git diff --stat` to ensure only intended files were modified.
-4. Reference the issue number in the PR description (e.g. `Fixes #2`).
+In your pull request description, you must:
+1. State the objective and reference the issue number (e.g. `Fixes #2`).
+2. Include the output of `git diff --stat`.
+3. Include the terminal output or explicit confirmation of the 5-point Pre-Flight Battery.
