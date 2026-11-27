@@ -461,7 +461,7 @@ fn run_scan(
     // 8. Output findings based on requested format
     match format {
         OutputFormat::Pretty => {
-            reporter::print_findings(&findings, base);
+            reporter::print_findings(&findings, base, diff.parse_errors.len());
         }
         OutputFormat::Json => {
             let report = ScanReport {
@@ -690,7 +690,7 @@ fn run_probe_cmd(
             println!("{}\n", "─".repeat(60));
 
             if !findings.is_empty() {
-                reporter::print_findings(&findings, base);
+                reporter::print_findings(&findings, base, diff.parse_errors.len());
             } else {
                 println!("✔ All mutants were successfully killed or asserted by tests.");
             }

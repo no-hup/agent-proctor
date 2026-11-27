@@ -12,8 +12,7 @@ pub fn evaluate_rules(diff: &SemanticDiff, policy: &Policy, waivers: &WaiverSet)
     // 1. PROCTOR-007: Policy Tampering (Cannot modify proctor.toml in PR)
     evaluate_policy_tamper(diff, &mut findings);
 
-    // 2. Parse Errors: Fail-closed on corrupted files or Tree-sitter failures
-    evaluate_parse_errors(diff, &mut findings);
+    // 2. Parse/syntax errors are quiet receipt notes (reporter), not AssertionLock findings.
 
     // 3. PROCTOR-001: Assertion Lock & Deletion & Anti-Drift & Skip/Xfail
     evaluate_assertion_lock(diff, policy, &mut findings);
@@ -98,30 +97,6 @@ fn evaluate_policy_tamper(diff: &SemanticDiff, findings: &mut Vec<Finding>) {
                 });
             }
         }
-    }
-}
-
-/// Fail-closed reporting on Tree-sitter parse or syntax errors.
-fn evaluate_parse_errors(diff: &SemanticDiff, findings: &mut Vec<Finding>) {
-    for (path, err_msg) in &diff.parse_errors {
-        let id = Finding::compute_id(RuleId::AssertionLock, path, "parse_error");
-        findings.push(Finding {
-            id: id.clone(),
-            rule_id: RuleId::AssertionLock,
-            tier: RuleTier::Report,
-            verdict: Verdict::Review {
-                finding_id: id,
-                evidence: format!("Tree-sitter parse error in {}: {}", path, err_msg),
-            },
-            file_path: path.clone(),
-            line_number: None,
-            test_name: None,
-            message: format!(
-                "File '{}' could not be parsed safely ({}); review required.",
-                path, err_msg
-            ),
-            evidence: err_msg.clone(),
-        });
     }
 }
 
@@ -330,28 +305,11 @@ fn evaluate_assertion_lock(diff: &SemanticDiff, policy: &Policy, findings: &mut 
                                 test_name
                             ),
                         )
-                    } else if linked {
-                        // Track B calibration: non-weakened assertion updates linked to changed
-                        // production code are benign co-evolution. Surfaced as informational counts
-                        // in the Test-Change Receipt rather than Review alerts.
-                        continue;
                     } else {
-                        // Unlinked non-weakened value swaps alongside production changes stay
-                        // at Report (Review) so silent value-flip laundering remains flagged.
-                        (
-                            Verdict::Review {
-                                finding_id: id.clone(),
-                                evidence: format!(
-                                    "Assertion modified/dropped: '{}'. No changed referenced production symbol detected.",
-                                    base_assert.text
-                                ),
-                            },
-                            RuleTier::Report,
-                            format!(
-                                "Assertion changed in test '{}' alongside unrelated edits (no changed target symbol detected).",
-                                test_name
-                            ),
-                        )
+                        // Equal-rank co-evolution alongside production changes: quiet under
+                        // default mode (incomplete symbol linking used to inflate Review noise).
+                        // Surfaced in the receipt's "Changed pre-existing assertions" table.
+                        continue;
                     };
 
                     findings.push(Finding {
@@ -1862,5 +1820,107 @@ def assert_node(node, expected):
             .collect();
         assert_eq!(mirror_policy.len(), 1);
         assert_eq!(mirror_policy[0].tier, RuleTier::Guard, "Policy mode should escalate mirror to Guard");
+    }
+
+    #[test]
+    fn test_equal_rank_coevolution_quiet_in_default_mode() {
+        let base = HashMap::from([
+            (
+                "app/cart.py".to_string(),
+                "def total(x):\n    return x\n".to_string(),
+            ),
+            (
+                "tests/test_cart.py".to_string(),
+                "def test_total():\n    assert total(10) == 10\n".to_string(),
+            ),
+        ]);
+        let head = HashMap::from([
+            (
+                "app/cart.py".to_string(),
+                "def total(x):\n    return x + 1\n".to_string(),
+            ),
+            (
+                "tests/test_cart.py".to_string(),
+                "def test_total():\n    assert total(10) == 11\n".to_string(),
+            ),
+        ]);
+        let diff = SemanticDiff::build(&base, &head).unwrap();
+        let findings = evaluate_rules(&diff, &Policy::default(), &WaiverSet::default());
+        assert!(
+            findings
+                .iter()
+                .filter(|f| f.rule_id == RuleId::AssertionLock)
+                .count()
+                == 0,
+            "Equal-rank co-evolution with production changes must emit no AssertionLock finding: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn test_equal_rank_coevolution_blocks_under_protect_existing_tests() {
+        let base = HashMap::from([
+            (
+                "app/cart.py".to_string(),
+                "def total(x):\n    return x\n".to_string(),
+            ),
+            (
+                "tests/test_cart.py".to_string(),
+                "def test_total():\n    assert total(10) == 10\n".to_string(),
+            ),
+        ]);
+        let head = HashMap::from([
+            (
+                "app/cart.py".to_string(),
+                "def total(x):\n    return x + 1\n".to_string(),
+            ),
+            (
+                "tests/test_cart.py".to_string(),
+                "def test_total():\n    assert total(10) == 11\n".to_string(),
+            ),
+        ]);
+        let diff = SemanticDiff::build(&base, &head).unwrap();
+        let mut pol = Policy::default();
+        pol.protect_existing_tests = true;
+        let findings = evaluate_rules(&diff, &pol, &WaiverSet::default());
+        assert!(
+            findings.iter().any(|f| {
+                f.rule_id == RuleId::AssertionLock
+                    && f.tier == RuleTier::Guard
+                    && matches!(f.verdict, Verdict::Block { .. })
+            }),
+            "protect_existing_tests must Guard-block equal-rank assertion edits: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn test_equal_rank_edit_blocks_when_no_production_change() {
+        let base = HashMap::from([(
+            "tests/test_cart.py".to_string(),
+            "def test_total():\n    assert total(10) == 10\n".to_string(),
+        )]);
+        let head = HashMap::from([(
+            "tests/test_cart.py".to_string(),
+            "def test_total():\n    assert total(10) == 11\n".to_string(),
+        )]);
+        let diff = SemanticDiff::build(&base, &head).unwrap();
+        let findings = evaluate_rules(&diff, &Policy::default(), &WaiverSet::default());
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert_eq!(findings[0].rule_id, RuleId::AssertionLock);
+        assert_eq!(findings[0].tier, RuleTier::Guard);
+        assert!(matches!(findings[0].verdict, Verdict::Block { .. }));
+    }
+
+    #[test]
+    fn test_parse_errors_do_not_emit_assertion_lock_findings() {
+        let mut diff = SemanticDiff::build(&HashMap::new(), &HashMap::new()).unwrap();
+        diff.parse_errors.push((
+            "huge/unsupported.py".to_string(),
+            "Tree-sitter parse error: unexpected token".to_string(),
+        ));
+        let findings = evaluate_rules(&diff, &Policy::default(), &WaiverSet::default());
+        assert!(
+            findings.is_empty(),
+            "parse_errors must not become AssertionLock findings: {findings:?}"
+        );
     }
 }
