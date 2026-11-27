@@ -27,7 +27,9 @@ This document outlines the architectural roadmap, shipped milestones, and future
 [Phase 0: Perimeter Hardening]      ──► COMPLETE (v0.1.0)
 [Phase 1: Guard vs Report Split]    ──► COMPLETE (v0.1.0)
 [Phase 2: Eval Surface & Corpus]    ──► COMPLETE (v0.1.0)
-[Phase 3: Benchmark Grounding]      ──► ACTIVE / NEXT
+[Phase 2.5: Noise & Calibration]    ──► COMPLETE (v0.2.3)
+[Phase 3: Benchmark Grounding]      ──► ACTIVE
+[Phase 3.5: The Smart Escalator]    ──► PLANNED (v0.3.0)
 [Phase 4: Multi-Language Lattices]  ──► PLANNED (Q1 2027)
 [Phase 5: Deep Anticheat & Config]  ──► PLANNED (Q1 2027)
 [Phase 6: Synthetic Mutation Fuzz]  ──► PLANNED (Q2 2027)
@@ -65,6 +67,12 @@ This document outlines the architectural roadmap, shipped milestones, and future
 - [x] **Dynamic Golden Corpus Walker:** Integration test suite in `corpus_tests.rs` dynamically walking all fixtures under `corpus/`.
 - [x] **Clean Corpus Fixtures:** Checked-in clean refactors in `corpus/clean/` asserting `findings.is_empty()` to protect precision.
 
+### Phase 2.5: Noise Reduction & Real-World Calibration (Shipped in v0.2.3)
+- [x] **Equal-Rank Co-Evolution Quieting:** Assertion edits with equal strength alongside production code changes are quieted into the collapsed `Changed pre-existing assertions` receipt table rather than raising yellow `AssertionLock` sirens in default mode. Strict Guard blocks preserved under `--protect-existing-tests`.
+- [x] **Repetitive Finding Aggregation:** Rolled up review findings per file when a file has `> 5` edits into clean summary lines (`N assertion edits in <file>`) to prevent PR comment spam.
+- [x] **Quiet Syntax & Parse Limits:** Tree-sitter parse errors on huge files or unsupported syntax demoted from yellow security alerts to quiet receipt notes (`| **Not analyzed (syntax/parse limit)** |`).
+- [x] **Pass-3 Test Rename Rematching:** Re-matched renamed tests by body symbol overlap in `proctor-diff` to prevent honest test renames from being flagged as test deletions.
+
 ---
 
 ## 🟡 Phase 3: Benchmark Grounding & Empirical Validation (Active / Next)
@@ -79,6 +87,26 @@ The objective of Phase 3 is to run Proctor against real-world datasets and publi
    - Establish and publish the true `block_rate_on_merged_history` baseline to prove Proctor does not trigger false-positive alarms on human refactors.
 3. **Stale Worktree Auto-Prune:**
    - Add automatic cleanup of stale evaluation worktrees on startup for high-throughput batch evaluation runs.
+
+---
+
+## 🔵 Phase 3.5: The Smart Escalator (Cascading Filter Pipeline)
+
+Bridge the gap between fast deterministic static scanning (~20ms) and deep dynamic verification by implementing a progressive 3-stage cascade:
+
+1. **Stage 1 (Fast Surface Scan — 20ms, zero dependencies):**
+   - Pure AST diffing across all PRs.
+   - Categorizes diff into `CLEAN` (fast pass), `SABOTAGE` (immediate Guard block), or `AMBIGUOUS_COEVOLUTION` (assertions updated alongside production edits).
+2. **Stage 2 (Deep Static Call-Graph Tracing — ~100ms, zero dependencies):**
+   - Multi-file symbol import tracking.
+   - Traces if the modified test actually invokes the modified production function through intermediate helpers/services without executing code.
+3. **Stage 3 (Conditional Dynamic Mutation Probe — Opt-in / Environment-Aware):**
+   - Connects existing `proctor-probe` engine into the scan workflow.
+   - When an assertion edit is ambiguous and a local test runner (`pytest` or `jest`) is detected in the CI environment:
+   - Proctor automatically runs `proctor-probe` for *that single test*.
+   - If the test kills injected mutants $\rightarrow$ Auto-cleared to **Green**.
+   - If the test passes vacuously $\rightarrow$ Escalate to **Red Block**.
+   - If the test runner is missing $\rightarrow$ Graceful fallback to the Receipt diff table.
 
 ---
 
@@ -146,3 +174,23 @@ Close subtle cheat vectors identified during architectural stress-testing:
    - Pre-configured `.pre-commit-config.yaml` hook definition.
    - Claude Code stop-hook recipe (`.claude/settings.json`).
    - Cursor Rules / Agent definition (`.cursorrules`).
+
+---
+
+## 🤖 Picking Up a Task (For Human & Agent Contributors)
+
+This repository is **agent-ready** and open for contributions. Every task is structured with clear objectives, allowed crate boundaries, and deterministic acceptance criteria.
+
+See [AGENTS.md](AGENTS.md) for the complete developer contract, command reference, and coding invariants.
+
+### Active "Good First Issues":
+1. **[Issue #1](https://github.com/no-hup/agent-proctor/issues/1): Add `cargo-binstall` metadata to Cargo.toml**
+   - *Target:* `Cargo.toml`
+   - *Goal:* Allow fast precompiled binary installation via `cargo binstall agent-proctor` without compiling from source.
+2. **[Issue #2](https://github.com/no-hup/agent-proctor/issues/2): Support `node:test` / Mocha runner in JavaScript/TypeScript AST parser**
+   - *Target:* `crates/proctor-parse/src/javascript.rs`
+   - *Goal:* Extract assertion patterns and test blocks for Node's built-in `node:test` (`test()`, `assert.strictEqual`) and Mocha (`it()`, `describe()`).
+3. **[Issue #3](https://github.com/no-hup/agent-proctor/issues/3): Add Go (`testing.T`) Tree-sitter assertion parser**
+   - *Target:* `crates/proctor-parse/src/go.rs`, `crates/proctor-diff/src/lib.rs`
+   - *Goal:* Parse table-driven test structs (`tests := []struct{...}`) and `testing.T` assertions (`assert.Equal`, `t.Fatalf`).
+

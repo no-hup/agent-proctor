@@ -1,0 +1,62 @@
+name: 🤖 Agent-Ready Task / Good First Issue
+description: A well-bounded, testable task structured for AI agents (and human contributors) to pick up and solve
+title: "feat/fix: <short summary>"
+labels: ["good first issue", "agent-task"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for authoring an agent-ready task! Please provide precise boundaries and acceptance criteria so an AI coding agent or contributor can implement and verify it without ambiguity.
+
+  - type: input
+    id: objective
+    attributes:
+      label: Objective
+      description: Concise 1-sentence statement of what needs to be built or fixed.
+      placeholder: "e.g. Add node:test runner assertion support to proctor-parse"
+    validations:
+      required: true
+
+  - type: textarea
+    id: boundary
+    attributes:
+      label: Allowed Boundary (Files & Directories in Scope)
+      description: Specific files or crate directories that should be edited. Explicitly list any files that must NOT be touched.
+      value: |
+        - **Target Crates:** `crates/proctor-...`
+        - **Files to edit:** 
+        - **Do not touch:** `Cargo.lock` network dependencies, `.github/`
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance_criteria
+    attributes:
+      label: Testable Acceptance Criteria
+      description: Discrete, observable checkpoints that prove the task is complete.
+      value: |
+        - [ ] **AC-1:** 
+        - [ ] **AC-2:** A new unit test under the corresponding crate verifies the positive case.
+        - [ ] **AC-3:** Existing test suite (`cargo test --workspace`) continues to pass with 0 failures.
+        - [ ] **AC-4:** Zero new network dependencies added to `Cargo.lock`.
+    validations:
+      required: true
+
+  - type: textarea
+    id: verification_command
+    attributes:
+      label: Verification Command
+      description: The exact command the agent should run to confirm success.
+      value: |
+        ```bash
+        cargo test --workspace && cargo build --release
+        ```
+    validations:
+      required: true
+
+  - type: textarea
+    id: context_links
+    attributes:
+      label: Helpful Context / References
+      description: Links to related code files, docs, or similar PRs.
+      placeholder: "e.g. See crates/proctor-parse/src/javascript.rs for how Jest assertions are extracted."
