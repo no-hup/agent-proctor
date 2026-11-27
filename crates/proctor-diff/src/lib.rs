@@ -1,6 +1,7 @@
 use proctor_parse::{
-    parse_javascript_source_file, parse_javascript_test_file, parse_python_source_file,
-    parse_python_test_file, ParsedSourceFile, ParsedTest, ParsedTestFile,
+    parse_go_source_file, parse_go_test_file, parse_javascript_source_file,
+    parse_javascript_test_file, parse_python_source_file, parse_python_test_file,
+    ParsedSourceFile, ParsedTest, ParsedTestFile,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -115,6 +116,7 @@ impl SemanticDiff {
                 .trim_end_matches(".js")
                 .trim_end_matches(".ts")
                 .trim_end_matches(".tsx")
+                .trim_end_matches(".go")
                 .replace('/', ".");
             for sym in &src.defined_symbols {
                 base_symbols.insert(sym.clone());
@@ -129,6 +131,7 @@ impl SemanticDiff {
                 .trim_end_matches(".js")
                 .trim_end_matches(".ts")
                 .trim_end_matches(".tsx")
+                .trim_end_matches(".go")
                 .replace('/', ".");
             for sym in &src.defined_symbols {
                 head_symbols.insert(sym.clone());
@@ -242,7 +245,7 @@ impl SemanticDiff {
                 let union = b_syms.union(&h_syms).count();
                 if shared >= 1 && union > 0 {
                     let jaccard = shared as f64 / union as f64;
-                    if jaccard >= 0.50 && best_match.map_or(true, |(_, s)| jaccard > s) {
+                    if jaccard >= 0.50 && best_match.is_none_or(|(_, s)| jaccard > s) {
                         best_match = Some((h_idx, jaccard));
                     }
                 }
@@ -485,7 +488,7 @@ fn compute_assertion_overlap(
 pub fn is_test_file(path: &str) -> bool {
     let p = Path::new(path);
     let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
-    if !["py", "js", "ts", "jsx", "tsx", "mjs", "cjs"].contains(&ext) {
+    if !["py", "js", "ts", "jsx", "tsx", "mjs", "cjs", "go"].contains(&ext) {
         return false;
     }
 
@@ -503,6 +506,8 @@ pub fn is_test_file(path: &str) -> bool {
         file_name.starts_with("test_")
             || file_name.ends_with("_test.py")
             || (in_test_dir && !file_name.starts_with("__"))
+    } else if ext == "go" {
+        file_name.ends_with("_test.go")
     } else {
         file_name.ends_with(".test.js")
             || file_name.ends_with(".test.ts")
@@ -523,12 +528,14 @@ pub fn is_test_file(path: &str) -> bool {
 pub fn is_source_file(path: &str) -> bool {
     let p = Path::new(path);
     let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
-    ["py", "js", "ts", "jsx", "tsx", "mjs", "cjs"].contains(&ext) && !is_test_file(path)
+    ["py", "js", "ts", "jsx", "tsx", "mjs", "cjs", "go"].contains(&ext) && !is_test_file(path)
 }
 
 fn parse_test(path: &str, content: &str) -> Result<ParsedTestFile, String> {
     if path.ends_with(".py") {
         parse_python_test_file(path, content)
+    } else if path.ends_with("_test.go") {
+        parse_go_test_file(path, content)
     } else if path.ends_with(".ts") || path.ends_with(".tsx") {
         parse_javascript_test_file(path, content, true)
     } else {
@@ -539,6 +546,8 @@ fn parse_test(path: &str, content: &str) -> Result<ParsedTestFile, String> {
 fn parse_source(path: &str, content: &str) -> Result<ParsedSourceFile, String> {
     if path.ends_with(".py") {
         parse_python_source_file(path, content)
+    } else if path.ends_with(".go") {
+        parse_go_source_file(path, content)
     } else if path.ends_with(".ts") || path.ends_with(".tsx") {
         parse_javascript_source_file(path, content, true)
     } else {
@@ -667,6 +676,45 @@ class User:
         assert!(!is_test_file("app/contestation.py"));
         assert!(!is_test_file("src/special.ts"));
         assert!(!is_test_file("lib/inspector.js"));
+        assert!(!is_test_file("pkg/latest.go"));
+        assert!(is_test_file("pkg/auth/token_test.go"));
+        assert!(is_source_file("pkg/auth/token.go"));
+    }
+
+    #[test]
+    fn test_go_table_driven_test_diff_pairs() {
+        let base_code = r#"
+package auth_test
+import "testing"
+func TestAuth(t *testing.T) {
+    tests := []struct{ name string; valid bool }{
+        {name: "valid", valid: true},
+        {name: "invalid", valid: false},
+    }
+    for _, tc := range tests {
+        if !tc.valid { t.Fail() }
+    }
+}
+"#;
+        let head_code = r#"
+package auth_test
+import "testing"
+func TestAuth(t *testing.T) {
+    tests := []struct{ name string; valid bool }{
+        {name: "valid", valid: true},
+    }
+    for _, tc := range tests {
+        if !tc.valid { t.Fail() }
+    }
+}
+"#;
+        let base = HashMap::from([("pkg/auth_test.go".to_string(), base_code.to_string())]);
+        let head = HashMap::from([("pkg/auth_test.go".to_string(), head_code.to_string())]);
+        let diff = SemanticDiff::build(&base, &head).unwrap();
+        assert_eq!(diff.paired_tests.len(), 1);
+        let pair = &diff.paired_tests[0];
+        assert_eq!(pair.base_test.parametrized_hashes.len(), 2);
+        assert_eq!(pair.head_test.parametrized_hashes.len(), 1);
     }
 
     #[test]

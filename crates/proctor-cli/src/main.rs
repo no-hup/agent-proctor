@@ -6,6 +6,7 @@ use proctor_rules::evaluate_rules;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Duration;
 
 mod git;
 mod reporter;
@@ -49,6 +50,10 @@ struct Cli {
     #[arg(long)]
     receipt: Option<PathBuf>,
 
+    /// Automatically escalate ambiguous test modifications using targeted dynamic probe
+    #[arg(long)]
+    escalate: bool,
+
     /// Policy mode (for agent loops/evals): treat pre-existing assertions on base as immutable
     #[arg(long)]
     protect_existing_tests: bool,
@@ -83,6 +88,10 @@ enum Commands {
         /// Append the markdown Test-Change Receipt to this file (e.g. $GITHUB_STEP_SUMMARY)
         #[arg(long)]
         receipt: Option<PathBuf>,
+
+        /// Automatically escalate ambiguous test modifications using targeted dynamic probe
+        #[arg(long)]
+        escalate: bool,
 
         /// Policy mode (for agent loops/evals): treat pre-existing assertions on base as immutable
         #[arg(long)]
@@ -200,7 +209,7 @@ fn main() -> Result<()> {
                 "agent-proctor v{} (deterministic AST verification)",
                 env!("CARGO_PKG_VERSION")
             );
-            println!("Supported languages: Python (pytest/unittest), JavaScript/TypeScript (Jest/Vitest)");
+            println!("Supported languages: Python (pytest/unittest), JavaScript/TypeScript (Jest/Vitest), Go (testing/testify)");
             println!("Engine: Tree-sitter 0.22, Blake3 cryptographic fingerprints");
             Ok(())
         }
@@ -213,6 +222,7 @@ fn main() -> Result<()> {
             experimental_probe,
             verify,
             receipt,
+            escalate,
             protect_existing_tests,
         }) => run_scan(
             &base,
@@ -223,6 +233,7 @@ fn main() -> Result<()> {
             experimental_probe,
             verify,
             receipt,
+            escalate,
             protect_existing_tests,
         ),
         Some(Commands::Verify {
@@ -271,6 +282,7 @@ fn main() -> Result<()> {
             cli.experimental_probe,
             cli.verify,
             cli.receipt,
+            cli.escalate,
             cli.protect_existing_tests,
         ),
     }
@@ -286,6 +298,7 @@ fn run_scan(
     experimental_probe: bool,
     verify: bool,
     receipt_path: Option<PathBuf>,
+    escalate: bool,
     protect_existing_tests: bool,
 ) -> Result<()> {
     // 1. Immutably anchor policy to the base ref
@@ -410,6 +423,11 @@ fn run_scan(
                 eprintln!("proctor: warning: dynamic verification skipped ({})", e);
             }
         }
+    }
+
+    // 5d. Smart Escalator: targeted dynamic verification for ambiguous test modifications
+    if escalate {
+        run_smart_escalator(&diff, &mut findings, base, head);
     }
 
     // 6. Generate SARIF if requested
@@ -540,6 +558,127 @@ fn collect_changed_paths_from_diff(diff: &SemanticDiff) -> Vec<String> {
         paths.insert(p.clone());
     }
     paths.into_iter().collect()
+}
+
+fn run_smart_escalator(
+    diff: &SemanticDiff,
+    findings: &mut Vec<proctor_core::Finding>,
+    base_ref: &str,
+    head_ref: Option<&str>,
+) {
+    let ambiguous_files: std::collections::BTreeSet<String> = findings
+        .iter()
+        .filter(|f| {
+            f.rule_id == RuleId::AssertionLock && matches!(f.verdict, Verdict::Review { .. })
+        })
+        .map(|f| f.file_path.clone())
+        .collect();
+
+    if ambiguous_files.is_empty() {
+        return;
+    }
+
+    let repo_root = Path::new(".");
+    let targets = extract_verify_targets(diff);
+    let mut escalated_targets: Vec<proctor_probe::VerifyTarget> = targets
+        .into_iter()
+        .filter(|t| ambiguous_files.contains(&t.file_path))
+        .collect();
+
+    escalated_targets.sort_by_key(|a| a.canonical_id());
+    escalated_targets.truncate(2);
+
+    if escalated_targets.is_empty() {
+        return;
+    }
+
+    eprintln!(
+        "proctor: Smart Escalator: probing {} ambiguous test target(s)...",
+        escalated_targets.len()
+    );
+
+    let changed_paths_hint = collect_changed_paths_from_diff(diff);
+
+    match proctor_probe::verify_tests_with_options(
+        repo_root,
+        base_ref,
+        head_ref,
+        proctor_probe::RunnerType::Auto,
+        &escalated_targets,
+        &changed_paths_hint,
+        Duration::from_secs(15),
+        2,
+    ) {
+        Ok(results) => {
+            for res in results {
+                match res.status {
+                    proctor_probe::VerificationStatus::Discriminating { reason } => {
+                        eprintln!(
+                            "proctor: Escalator verified test '{}' is discriminating against base: {}",
+                            res.test_id, reason
+                        );
+                        findings.retain(|f| {
+                            !(f.file_path == res.test_file
+                                && f.rule_id == RuleId::AssertionLock
+                                && matches!(f.verdict, Verdict::Review { .. }))
+                        });
+                    }
+                    proctor_probe::VerificationStatus::DoesNotDiscriminate => {
+                        eprintln!(
+                            "proctor: Escalator verified test '{}' does NOT discriminate against base logic!",
+                            res.test_id
+                        );
+                        for f in findings.iter_mut() {
+                            if f.file_path == res.test_file && f.rule_id == RuleId::AssertionLock {
+                                f.tier = RuleTier::Guard;
+                                f.verdict = Verdict::Block {
+                                    rule: RuleId::AssertionLock,
+                                    evidence: format!(
+                                        "Escalator: Test '{}' passes on base without exercising changed logic; assertion weakening is vacuous.",
+                                        res.test_id
+                                    ),
+                                };
+                                f.message = format!(
+                                    "Dynamic probe confirmed assertion change in '{}' is vacuous and does not discriminate against base.",
+                                    res.test_id
+                                );
+                            }
+                        }
+                    }
+                    proctor_probe::VerificationStatus::Broken { error } => {
+                        eprintln!(
+                            "proctor: Escalator test '{}' is broken on head: {}",
+                            res.test_id, error
+                        );
+                        for f in findings.iter_mut() {
+                            if f.file_path == res.test_file && f.rule_id == RuleId::AssertionLock {
+                                f.tier = RuleTier::Guard;
+                                f.verdict = Verdict::Block {
+                                    rule: RuleId::AssertionLock,
+                                    evidence: format!("Escalator: Test is broken on head commit: {}", error),
+                                };
+                            }
+                        }
+                    }
+                    proctor_probe::VerificationStatus::MissingOnBase { error } => {
+                        eprintln!(
+                            "proctor: Escalator test '{}' references symbols missing on base: {}",
+                            res.test_id, error
+                        );
+                    }
+                    proctor_probe::VerificationStatus::Inconclusive { reason } => {
+                        eprintln!(
+                            "proctor: Escalator probe inconclusive for '{}' ({}); preserving static review.",
+                            res.test_id, reason
+                        );
+                    }
+                }
+            }
+        }
+        Err(e) => {
+            eprintln!("proctor: warning: Smart Escalator probe skipped ({})", e);
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1124,6 +1263,83 @@ fn run_eval(
     Ok(())
 }
 
+/// Prunes stale evaluation worktrees left behind by interrupted or crashed batch runs.
+/// Checks process liveness via `.proctor_pid` or falls back to age > 3600s.
+fn prune_stale_eval_worktrees(repo_path: &Path) {
+    let _ = Command::new("git")
+        .current_dir(repo_path)
+        .args(["worktree", "prune"])
+        .output();
+
+    let out = match Command::new("git")
+        .current_dir(repo_path)
+        .args(["worktree", "list", "--porcelain"])
+        .output()
+    {
+        Ok(o) if o.status.success() => o,
+        _ => return,
+    };
+
+    let list_str = String::from_utf8_lossy(&out.stdout);
+    for block in list_str.split("\n\n") {
+        let mut wt_path: Option<&str> = None;
+        for line in block.lines() {
+            if let Some(stripped) = line.strip_prefix("worktree ") {
+                wt_path = Some(stripped.trim());
+            }
+        }
+
+        if let Some(path_str) = wt_path {
+            let p = Path::new(path_str);
+            let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            let is_proctor_eval = name.contains("proctor_eval")
+                || path_str.contains("/var/folders/")
+                || path_str.contains("/tmp/");
+
+            if is_proctor_eval && p.exists() {
+                let pid_file = p.join(".proctor_pid");
+                let mut should_prune = false;
+
+                if pid_file.exists() {
+                    if let Ok(content) = std::fs::read_to_string(&pid_file) {
+                        let parts: Vec<&str> = content.split_whitespace().collect();
+                        if let Some(pid_str) = parts.first() {
+                            let is_alive = Command::new("kill")
+                                .args(["-0", pid_str])
+                                .output()
+                                .map(|o| o.status.success())
+                                .unwrap_or(false);
+                            if !is_alive {
+                                should_prune = true;
+                            }
+                        }
+                    }
+                } else if let Ok(meta) = p.metadata() {
+                    if let Ok(modified) = meta.modified() {
+                        if let Ok(elapsed) = modified.elapsed() {
+                            if elapsed.as_secs() > 3600 {
+                                should_prune = true;
+                            }
+                        }
+                    }
+                }
+
+                if should_prune {
+                    let _ = Command::new("git")
+                        .current_dir(repo_path)
+                        .args(["worktree", "remove", "--force", path_str])
+                        .output();
+                }
+            }
+        }
+    }
+
+    let _ = Command::new("git")
+        .current_dir(repo_path)
+        .args(["worktree", "prune"])
+        .output();
+}
+
 /// Evaluates a patch against a real repository worktree to provide 100% accurate full-file AST context.
 fn eval_instance_with_worktree(
     repo_path: &Path,
@@ -1140,15 +1356,12 @@ fn eval_instance_with_worktree(
         );
     }
 
+    // 1. Prune stale/orphaned worktrees with liveness verification
+    prune_stale_eval_worktrees(repo_path);
+
     let temp_dir = tempfile::tempdir()?;
     let wt_path = temp_dir.path();
     let base_ref = base_commit.unwrap_or("HEAD");
-
-    // 1. Prune dead/stale worktrees before creating a new one
-    let _ = Command::new("git")
-        .current_dir(repo_path)
-        .args(["worktree", "prune"])
-        .output();
 
     let wt_add = Command::new("git")
         .current_dir(repo_path)
@@ -1167,6 +1380,20 @@ fn eval_instance_with_worktree(
             String::from_utf8_lossy(&wt_add.stderr)
         );
     }
+
+    // Record PID and timestamp marker for safe background pruning
+    let pid_path = wt_path.join(".proctor_pid");
+    let _ = std::fs::write(
+        &pid_path,
+        format!(
+            "{} {}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs()
+        ),
+    );
 
     let patch_path = wt_path.join(".proctor_eval.patch");
     std::fs::write(&patch_path, model_patch)?;

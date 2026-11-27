@@ -966,3 +966,240 @@ fn test_cli_protect_existing_tests_and_reverse_verify_contract_check() {
         "Policy mode must block modified pre-existing assertion even when prod changed"
     );
 }
+
+#[test]
+fn test_cli_go_table_driven_row_drop_blocks() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let repo_path = temp_dir.path();
+    setup_repo(repo_path);
+
+    let base_go = r#"
+package auth_test
+
+import "testing"
+
+func TestLoginCases(t *testing.T) {
+    tests := []struct {
+        name  string
+        user  string
+        valid bool
+    }{
+        {name: "admin user", user: "admin", valid: true},
+        {name: "guest user", user: "guest", valid: false},
+    }
+
+    for _, tc := range tests {
+        if !tc.valid && tc.user == "admin" {
+            t.Fail()
+        }
+    }
+}
+"#;
+    let test_file = repo_path.join("auth_test.go");
+    fs::write(&test_file, base_go).unwrap();
+
+    let run = |args: &[&str]| {
+        let out = Command::new("git")
+            .current_dir(repo_path)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+    };
+    run(&["add", "."]);
+    run(&["commit", "-m", "base: add auth_test.go with 2 table cases"]);
+
+    // Head: drop the second test case
+    let head_go = r#"
+package auth_test
+
+import "testing"
+
+func TestLoginCases(t *testing.T) {
+    tests := []struct {
+        name  string
+        user  string
+        valid bool
+    }{
+        {name: "admin user", user: "admin", valid: true},
+    }
+
+    for _, tc := range tests {
+        if !tc.valid && tc.user == "admin" {
+            t.Fail()
+        }
+    }
+}
+"#;
+    fs::write(&test_file, head_go).unwrap();
+
+    let proctor_bin = env!("CARGO_BIN_EXE_proctor");
+    let output = Command::new(proctor_bin)
+        .current_dir(repo_path)
+        .args(["scan", "--base", "HEAD"])
+        .output()
+        .unwrap();
+
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "Dropping a Go table-driven test row must be blocked with exit code 2"
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("PROCTOR-006") && stdout.contains("Parametrized test row count reduced"),
+        "Stdout must flag PROCTOR-006 Parametrized test row count reduced: {}",
+        stdout
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn test_cli_smart_escalator_vacuous_blocks() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let repo_path = temp_dir.path();
+    setup_repo(repo_path);
+    install_python_pytest_runner(repo_path, None);
+
+    fs::create_dir_all(repo_path.join("app")).unwrap();
+    fs::create_dir_all(repo_path.join("tests")).unwrap();
+    fs::write(repo_path.join("app/__init__.py"), "").unwrap();
+    fs::write(
+        repo_path.join("app/total.py"),
+        "def total(x):\n    return x + 1\n",
+    )
+    .unwrap();
+    fs::write(
+        repo_path.join("tests/test_total.py"),
+        "from app.total import total\ndef test_calc():\n    assert total(5) == 6\n",
+    )
+    .unwrap();
+    fs::write(repo_path.join(".gitignore"), ".venv/\n").unwrap();
+
+    let run = |args: &[&str]| {
+        let out = Command::new("git")
+            .current_dir(repo_path)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {:?} failed", args);
+    };
+    run(&["add", "."]);
+    run(&["commit", "-m", "Base commit"]);
+
+    // Head: changes production calculation, but weakens assertion from exact == 6 to weak >= 0
+    fs::write(
+        repo_path.join("app/total.py"),
+        "def total(x):\n    return x * 2\n",
+    )
+    .unwrap();
+    fs::write(
+        repo_path.join("tests/test_total.py"),
+        "from app.total import total\ndef test_calc():\n    assert total(5) >= 0\n",
+    )
+    .unwrap();
+
+    let proctor_bin = env!("CARGO_BIN_EXE_proctor");
+
+    // Without --escalate: reports Review finding in receipt / stdout, exits 0 in default mode
+    let out_default = Command::new(proctor_bin)
+        .current_dir(repo_path)
+        .args(["scan", "--base", "HEAD"])
+        .output()
+        .unwrap();
+    assert!(
+        out_default.status.success(),
+        "Default scan without escalator exits 0 for advisory report"
+    );
+    let default_stdout = String::from_utf8_lossy(&out_default.stdout);
+    assert!(
+        default_stdout.contains("REVIEW") || default_stdout.contains("weakened"),
+        "Default scan reports review finding: {}",
+        default_stdout
+    );
+
+    // With --escalate: runs dynamic verify against base, detects DoesNotDiscriminate (test passes on base!), promotes to hard Guard Block (code 2)!
+    let out_escalate = Command::new(proctor_bin)
+        .current_dir(repo_path)
+        .args(["scan", "--base", "HEAD", "--escalate"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        out_escalate.status.code(),
+        Some(2),
+        "Smart Escalator must promote vacuous assertion weakening to hard Guard Block (code 2)"
+    );
+    let stdout = String::from_utf8_lossy(&out_escalate.stdout);
+    assert!(
+        stdout.contains("BLOCKED") && stdout.contains("Dynamic probe confirmed assertion change"),
+        "Stdout must report Guard Block from Escalator: {}",
+        stdout
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn test_cli_smart_escalator_discriminating_clears_review() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let repo_path = temp_dir.path();
+    setup_repo(repo_path);
+    install_python_pytest_runner(repo_path, None);
+
+    fs::create_dir_all(repo_path.join("app")).unwrap();
+    fs::create_dir_all(repo_path.join("tests")).unwrap();
+    fs::write(repo_path.join("app/__init__.py"), "").unwrap();
+    fs::write(
+        repo_path.join("app/billing.py"),
+        "def compute_fee(amount):\n    return amount + 10\n",
+    )
+    .unwrap();
+    fs::write(
+        repo_path.join("tests/test_billing.py"),
+        "from app.billing import compute_fee\ndef test_fee():\n    assert compute_fee(100) == 110\n",
+    )
+    .unwrap();
+    fs::write(repo_path.join(".gitignore"), ".venv/\n").unwrap();
+
+    let run = |args: &[&str]| {
+        let out = Command::new("git")
+            .current_dir(repo_path)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {:?} failed", args);
+    };
+    run(&["add", "."]);
+    run(&["commit", "-m", "Base commit"]);
+
+    // Head: changes fee to 20, and co-evolves assertion to == 120
+    fs::write(
+        repo_path.join("app/billing.py"),
+        "def compute_fee(amount):\n    return amount + 20\n",
+    )
+    .unwrap();
+    fs::write(
+        repo_path.join("tests/test_billing.py"),
+        "from app.billing import compute_fee\ndef test_fee():\n    assert compute_fee(100) == 120\n",
+    )
+    .unwrap();
+
+    let proctor_bin = env!("CARGO_BIN_EXE_proctor");
+
+    // With --escalate: dynamic verify proves new assertion fails against base (reproduces bug / discriminates), so clean PASS
+    let out_escalate = Command::new(proctor_bin)
+        .current_dir(repo_path)
+        .args(["scan", "--base", "HEAD", "--escalate"])
+        .output()
+        .unwrap();
+
+    assert!(
+        out_escalate.status.success(),
+        "Smart Escalator must verify discrimination and exit 0 for legitimate co-evolution"
+    );
+    let stdout = String::from_utf8_lossy(&out_escalate.stdout);
+    assert!(
+        stdout.contains("PASS") || !stdout.contains("BLOCKED"),
+        "Must not be blocked: {}",
+        stdout
+    );
+}

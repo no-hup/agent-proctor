@@ -1,9 +1,11 @@
 use proctor_core::*;
 use std::collections::HashMap;
 
+pub mod go;
 pub mod javascript;
 pub mod python;
 
+pub use go::{parse_go_source_file, parse_go_test_file};
 pub use javascript::{parse_javascript_source_file, parse_javascript_test_file};
 pub use python::{parse_python_source_file, parse_python_test_file};
 

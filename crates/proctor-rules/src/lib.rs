@@ -1811,8 +1811,10 @@ def assert_node(node, expected):
         assert_eq!(mirror_default.len(), 1, "Must emit once per (test, literal): {:?}", mirror_default);
         assert_eq!(mirror_default[0].tier, RuleTier::Report, "Default mode should be Report, not Guard");
 
-        let mut pol = Policy::default();
-        pol.protect_existing_tests = true;
+        let pol = Policy {
+            protect_existing_tests: true,
+            ..Policy::default()
+        };
         let policy_findings = evaluate_rules(&diff, &pol, &WaiverSet::default());
         let mirror_policy: Vec<_> = policy_findings
             .iter()
@@ -1879,8 +1881,10 @@ def assert_node(node, expected):
             ),
         ]);
         let diff = SemanticDiff::build(&base, &head).unwrap();
-        let mut pol = Policy::default();
-        pol.protect_existing_tests = true;
+        let pol = Policy {
+            protect_existing_tests: true,
+            ..Policy::default()
+        };
         let findings = evaluate_rules(&diff, &pol, &WaiverSet::default());
         assert!(
             findings.iter().any(|f| {
@@ -1922,5 +1926,42 @@ def assert_node(node, expected):
             findings.is_empty(),
             "parse_errors must not become AssertionLock findings: {findings:?}"
         );
+    }
+
+    #[test]
+    fn test_go_table_driven_row_drop_blocks_as_parametrize_row_drop() {
+        let base_code = r#"
+package auth_test
+import "testing"
+func TestAuth(t *testing.T) {
+    tests := []struct{ name string; valid bool }{
+        {name: "case 1", valid: true},
+        {name: "case 2", valid: false},
+    }
+    for _, tc := range tests {
+        if !tc.valid { t.Fail() }
+    }
+}
+"#;
+        let head_code = r#"
+package auth_test
+import "testing"
+func TestAuth(t *testing.T) {
+    tests := []struct{ name string; valid bool }{
+        {name: "case 1", valid: true},
+    }
+    for _, tc := range tests {
+        if !tc.valid { t.Fail() }
+    }
+}
+"#;
+        let base = HashMap::from([("pkg/auth_test.go".to_string(), base_code.to_string())]);
+        let head = HashMap::from([("pkg/auth_test.go".to_string(), head_code.to_string())]);
+        let diff = SemanticDiff::build(&base, &head).unwrap();
+        let findings = evaluate_rules(&diff, &Policy::default(), &WaiverSet::default());
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert_eq!(findings[0].rule_id, RuleId::ParametrizeRowDrop);
+        assert_eq!(findings[0].tier, RuleTier::Guard);
+        assert!(matches!(findings[0].verdict, Verdict::Block { .. }));
     }
 }

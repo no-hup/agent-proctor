@@ -29,8 +29,8 @@ This document outlines the architectural roadmap, shipped milestones, and future
 [Phase 2: Eval Surface & Corpus]    ──► COMPLETE (v0.1.0)
 [Phase 2.5: Noise & Calibration]    ──► COMPLETE (v0.2.3)
 [Phase 3: Benchmark Grounding]      ──► ACTIVE
-[Phase 3.5: The Smart Escalator]    ──► PLANNED (v0.3.0)
-[Phase 4: Multi-Language Lattices]  ──► PLANNED (Q1 2027)
+[Phase 3.5: The Smart Escalator]    ──► COMPLETE (v0.2.4)
+[Phase 4: Multi-Language Lattices]  ──► ACTIVE (Go Complete)
 [Phase 5: Deep Anticheat & Config]  ──► PLANNED (Q1 2027)
 [Phase 6: Synthetic Mutation Fuzz]  ──► PLANNED (Q2 2027)
 [Phase 7: Packaging & Ecosystem]    ──► PLANNED (Q2 2027)
@@ -86,44 +86,49 @@ The objective of Phase 3 is to run Proctor against real-world datasets and publi
    - Run `proctor audit --limit 500 --label audit.csv` across 10 top open-source repositories (`django/django`, `pallets/flask`, `sympy/sympy`, `psf/requests`, `expressjs/express`, `facebook/jest`).
    - Establish and publish the true `block_rate_on_merged_history` baseline to prove Proctor does not trigger false-positive alarms on human refactors.
 3. **Stale Worktree Auto-Prune:**
-   - Add automatic cleanup of stale evaluation worktrees on startup for high-throughput batch evaluation runs.
+   - [x] Add automatic cleanup of stale evaluation worktrees on startup for high-throughput batch evaluation runs, checking process liveness via `.proctor_pid` or aging thresholds (>3600s).
 
 ---
 
-## 🔵 Phase 3.5: The Smart Escalator (Cascading Filter Pipeline)
+## 🟢 Phase 3.5: The Smart Escalator (Cascading Filter Pipeline — Complete)
 
 Bridge the gap between fast deterministic static scanning (~20ms) and deep dynamic verification by implementing a progressive 3-stage cascade:
 
 1. **Stage 1 (Fast Surface Scan — 20ms, zero dependencies):**
-   - Pure AST diffing across all PRs.
-   - Categorizes diff into `CLEAN` (fast pass), `SABOTAGE` (immediate Guard block), or `AMBIGUOUS_COEVOLUTION` (assertions updated alongside production edits).
+   - [x] Pure AST diffing across all PRs.
+   - [x] Categorizes diff into `CLEAN` (fast pass), `SABOTAGE` (immediate Guard block), or `AMBIGUOUS_COEVOLUTION` (assertions updated alongside production edits).
 2. **Stage 2 (Deep Static Call-Graph Tracing — ~100ms, zero dependencies):**
-   - Multi-file symbol import tracking.
-   - Traces if the modified test actually invokes the modified production function through intermediate helpers/services without executing code.
+   - [x] Multi-file symbol import tracking.
+   - [x] Traces if the modified test actually invokes the modified production function through intermediate helpers/services without executing code.
 3. **Stage 3 (Conditional Dynamic Mutation Probe — Opt-in / Environment-Aware):**
-   - Connects existing `proctor-probe` engine into the scan workflow.
-   - When an assertion edit is ambiguous and a local test runner (`pytest` or `jest`) is detected in the CI environment:
-   - Proctor automatically runs `proctor-probe` for *that single test*.
-   - If the test kills injected mutants $\rightarrow$ Auto-cleared to **Green**.
-   - If the test passes vacuously $\rightarrow$ Escalate to **Red Block**.
-   - If the test runner is missing $\rightarrow$ Graceful fallback to the Receipt diff table.
+   - [x] Connects existing `proctor-probe` engine into the scan workflow (`proctor scan --escalate`).
+   - [x] When an assertion edit is ambiguous and a local test runner (`pytest` or `jest`) is detected in the CI environment:
+   - [x] Proctor automatically runs `proctor-probe` targeted for *that single test*.
+   - [x] If the test discriminates against base code $\rightarrow$ Auto-cleared to **Green**.
+   - [x] If the test passes vacuously on base $\rightarrow$ Escalate to **Red Block**.
+   - [x] If the test runner is missing $\rightarrow$ Graceful fallback to the Receipt diff table without failing CI.
 
 ---
 
-## 🔵 Phase 4: Multi-Language AST Lattice Expansion
+## 🔵 Phase 4: Multi-Language AST Lattice Expansion (Active)
 
 Extend Tree-sitter semantic anticheat beyond Python and JavaScript/TypeScript:
 
-1. **Go (`tree-sitter-go`):**
-   - Promote staged fixture `corpus/go/table_driven_row_drop/` to an active rule.
-   - Detect deleted rows in table-driven test structs (`tests := []struct{...}{ ... }`).
-   - Detect weakening in `assert.Equal`, `assert.NoError`, and `t.Fatalf` checks.
-2. **Rust (`tree-sitter-rust`):**
-   - Parse `#[test]`, `#[should_panic]`, and `#[ignore]` attributes.
-   - Assertion lattice for `assert_eq!`, `assert_ne!`, and `assert!`.
-   - Snapshot tampering detection for `insta` snapshot files (`.snap`).
-3. **Java / Kotlin (`tree-sitter-java`, `tree-sitter-kotlin`):**
-   - JUnit 5 (`@Test`, `@ParameterizedTest`, `@Disabled`) and AssertJ assertion transitions.
+1. **Go (`tree-sitter-go`):** `[COMPLETE]`
+   - [x] Implement Tree-sitter Go parser in `crates/proctor-parse/src/go.rs`.
+   - [x] Detect deleted rows in table-driven test structs (`tests := []struct{...}{ ... }` and `[]testCase{ ... }`).
+   - [x] Detect weakening in `assert.Equal`, `assert.NoError`, and `t.Fatalf`/`t.Errorf` checks.
+   - [x] Zero network dependencies in `Cargo.lock`.
+2. **Rust (`tree-sitter-rust`):** `[Issue #4]`
+   - [ ] Parse `#[test]`, `#[should_panic]`, and `#[ignore]` attributes.
+   - [ ] Assertion lattice for `assert_eq!`, `assert_ne!`, and `assert!`.
+   - [ ] Snapshot tampering detection for `insta` snapshot files (`.snap`).
+3. **Java / Kotlin (`tree-sitter-java`, `tree-sitter-kotlin`):** `[Issue #5]`
+   - [ ] JUnit 5 (`@Test`, `@ParameterizedTest`, `@Disabled`) and AssertJ assertion transitions.
+4. **Node:test & Mocha (`tree-sitter-javascript`, `tree-sitter-typescript`):** `[Issue #2]`
+   - [ ] Support Node.js native `node:test` (`test(...)`, `describe(...)`, `assert.*`) alongside Jest/Vitest.
+5. **Ruby (`tree-sitter-ruby`):** `[Issue #6]`
+   - [ ] RSpec (`describe`, `context`, `it`, `expect(...).to eq(...)`) and Minitest.
 
 ---
 

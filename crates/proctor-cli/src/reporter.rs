@@ -446,8 +446,8 @@ pub fn write_github_step_summary(
 fn is_unanalyzed_test(path: &str) -> bool {
     let p = std::path::Path::new(path);
     let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
-    const UNSUPPORTED: [&str; 12] = [
-        "go", "rs", "rb", "java", "kt", "php", "cs", "swift", "scala", "ex", "exs", "cpp",
+    const UNSUPPORTED: [&str; 11] = [
+        "rs", "rb", "java", "kt", "php", "cs", "swift", "scala", "ex", "exs", "cpp",
     ];
     if !UNSUPPORTED.contains(&ext) {
         return false;
@@ -986,13 +986,13 @@ mod tests {
     use std::collections::HashMap;
 
     #[test]
-    fn receipt_flags_unanalyzed_go_tests_and_is_quiet_when_nothing_changed() {
-        let base = HashMap::from([("pkg/a_test.go".to_string(), "package pkg\n".to_string())]);
+    fn receipt_flags_unanalyzed_languages_and_is_quiet_when_nothing_changed() {
+        let base = HashMap::from([("spec/a_spec.rb".to_string(), "describe 'foo' do\nend\n".to_string())]);
         let head = HashMap::new();
         let diff = proctor_diff::SemanticDiff::build(&base, &head).unwrap();
         let r = render_receipt(&diff, &[]);
         assert!(r.contains("Not analyzed"), "{r}");
-        assert!(r.contains("pkg/a_test.go"));
+        assert!(r.contains("spec/a_spec.rb"));
         assert!(!r.contains("Nothing to review"));
         assert!(r.contains("no tests were executed"));
 
