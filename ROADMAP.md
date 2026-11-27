@@ -193,4 +193,13 @@ See [AGENTS.md](AGENTS.md) for the complete developer contract, command referenc
 3. **[Issue #3](https://github.com/no-hup/agent-proctor/issues/3): Add Go (`testing.T`) Tree-sitter assertion parser**
    - *Target:* `crates/proctor-parse/src/go.rs`, `crates/proctor-diff/src/lib.rs`
    - *Goal:* Parse table-driven test structs (`tests := []struct{...}`) and `testing.T` assertions (`assert.Equal`, `t.Fatalf`).
+4. **[Issue #4](https://github.com/no-hup/agent-proctor/issues/4): Add Rust (`#[test]`, `assert_eq!`) Tree-sitter assertion lattice**
+   - *Target:* `crates/proctor-parse/src/rust.rs`, `crates/proctor-diff/src/lib.rs`
+   - *Goal:* Extract `#[test]` and `#[ignore]` attributes, map `assert_eq!` (Exact) vs `assert!` (Weak).
+5. **[Issue #5](https://github.com/no-hup/agent-proctor/issues/5): Add Java (JUnit 5, AssertJ) Tree-sitter assertion lattice**
+   - *Target:* `crates/proctor-parse/src/java.rs`, `crates/proctor-diff/src/lib.rs`
+   - *Goal:* Parse `@Test` and `@Disabled` annotations, JUnit `assertEquals`, and AssertJ `assertThat`.
+6. **[Issue #6](https://github.com/no-hup/agent-proctor/issues/6): Add Ruby (RSpec, Minitest) Tree-sitter assertion lattice**
+   - *Target:* `crates/proctor-parse/src/ruby.rs`, `crates/proctor-diff/src/lib.rs`
+   - *Goal:* Parse RSpec `it` / `describe` blocks, `expect(...).to eq(...)`, and `skip` / `pending` markers.
 
