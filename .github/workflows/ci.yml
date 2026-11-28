@@ -7,6 +7,9 @@ name: CI
     branches: [main]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   test:
     name: Test & Integrity Verification
@@ -19,13 +22,23 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
 
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
+
+      - name: Check code formatting
+        run: cargo fmt --all --check
+
+      - name: Lint with clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: Run workspace tests
         run: cargo test --all --verbose
 
       - name: Verify self with proctor scan
+        env:
+          BASE_REF: ${{ github.base_ref || 'HEAD~1' }}
         run: |
-          cargo run --bin proctor -- scan --base HEAD~1 --sarif results.sarif || true
+          cargo run --bin proctor -- scan --base "$BASE_REF" --sarif results.sarif

@@ -1,8 +1,86 @@
+# Rust build and packaging artifacts
 /target/
 /target-*/
+/dist/
 /dist-bin/
-/scratch/
-**/*.rs.bk
+/dist-merged/
+*.tar.gz
+*.sha256
+
+# Secrets and environment configs (prevents accidental key/credential commits)
+.env
+.env.*
+*.env
+*.pem
+*.key
+*.cert
+*.pfx
+*.p12
+
+# OS files
 .DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# IDE and editor settings
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+*.bak
+
+# Python artifacts and virtualenvs
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+ENV/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# Rust backups & artifacts
+**/*.rs.bk
+Cargo.lock.saved
+
+# Node / JS artifacts
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Proctor local runs, receipts, and SARIF output
+/scratch/
+*.sarif
+results.sarif
+proctor-results.sarif
+clean-results.sarif
+cheat-results.sarif
+receipt.md

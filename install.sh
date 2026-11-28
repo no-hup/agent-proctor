@@ -64,11 +64,32 @@ echo "==> Downloading agent-proctor (${TARGET_OS}-${TARGET_ARCH}) from ${TAR_URL
 
 if command -v curl >/dev/null 2>&1; then
   curl -sSfL "$TAR_URL" -o "${TMPDIR}/proctor.tar.gz"
+  curl -sSfL "${TAR_URL}.sha256" -o "${TMPDIR}/proctor.tar.gz.sha256" 2>/dev/null || true
 elif command -v wget >/dev/null 2>&1; then
   wget -qO "${TMPDIR}/proctor.tar.gz" "$TAR_URL"
+  wget -qO "${TMPDIR}/proctor.tar.gz.sha256" "${TAR_URL}.sha256" 2>/dev/null || true
 else
   echo "Error: neither curl nor wget found. Please install curl or wget." >&2
   exit 1
+fi
+
+# Verify SHA-256 checksum if checksum file is present
+if [ -s "${TMPDIR}/proctor.tar.gz.sha256" ]; then
+  EXPECTED_HASH="$(awk '{print $1}' "${TMPDIR}/proctor.tar.gz.sha256")"
+  if command -v sha256sum >/dev/null 2>&1; then
+    ACTUAL_HASH="$(sha256sum "${TMPDIR}/proctor.tar.gz" | awk '{print $1}')"
+  elif command -v shasum >/dev/null 2>&1; then
+    ACTUAL_HASH="$(shasum -a 256 "${TMPDIR}/proctor.tar.gz" | awk '{print $1}')"
+  else
+    ACTUAL_HASH=""
+  fi
+  if [ -n "$ACTUAL_HASH" ]; then
+    if [ "$EXPECTED_HASH" != "$ACTUAL_HASH" ]; then
+      echo "Error: SHA-256 checksum mismatch! Expected: $EXPECTED_HASH, Got: $ACTUAL_HASH" >&2
+      exit 1
+    fi
+    echo "==> Verified SHA-256 checksum ($ACTUAL_HASH)"
+  fi
 fi
 
 echo "==> Extracting binary..."

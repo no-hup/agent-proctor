@@ -1,7 +1,7 @@
 use proctor_parse::{
     parse_go_source_file, parse_go_test_file, parse_javascript_source_file,
-    parse_javascript_test_file, parse_python_source_file, parse_python_test_file,
-    ParsedSourceFile, ParsedTest, ParsedTestFile,
+    parse_javascript_test_file, parse_python_source_file, parse_python_test_file, ParsedSourceFile,
+    ParsedTest, ParsedTestFile,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -350,7 +350,8 @@ impl SemanticDiff {
 
     /// True if the test (before or after the PR) references a production definition changed in this PR.
     pub fn test_links_changed_code(&self, base: &ParsedTest, head: &ParsedTest) -> bool {
-        self.test_links_changed_code_with(base, head, &BareTokenLinker).is_linked()
+        self.test_links_changed_code_with(base, head, &BareTokenLinker)
+            .is_linked()
     }
 }
 
@@ -743,7 +744,10 @@ func TestAuth(t *testing.T) {
             "describe('fog', () => {\n  it('eases from lift start value to 0', () => {\n    expect(fogValueAt(1000, 999)).toBe(FOG_START);\n  });\n});\n".to_string(),
         )]);
         let diff = SemanticDiff::build(&base, &head).unwrap();
-        assert!(diff.deleted_tests.is_empty(), "Renamed test should not be in deleted_tests");
+        assert!(
+            diff.deleted_tests.is_empty(),
+            "Renamed test should not be in deleted_tests"
+        );
         assert_eq!(diff.paired_tests.len(), 1);
     }
 }

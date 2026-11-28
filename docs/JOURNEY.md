@@ -26,7 +26,7 @@ We hypothesized that **fast, deterministic AST diff anticheat** was the missing 
 
 ## 2. What We Finalized (Core Architecture & Design Principles)
 
-We codified three core invariants in [ADR 001–007](file:///Users/shaurya/Desktop/moonshot/agent-proctor/docs/DECISIONS.md):
+We codified three core invariants in [ADR 001–007](DECISIONS.md):
 
 1. **Zero LLMs in the Verification Loop:** 100% deterministic Tree-sitter AST diffing in Rust, mathematically reproducible, zero prompt injection attack surface, sub-200ms execution latency, and $0 token costs.
 2. **The Dual-Tier Model (`Guard` vs. `Report`):**
@@ -200,7 +200,7 @@ To avoid toolchain nightmares and environment fragility, we enforce a strict arc
 - [x] **Calibrate OpenHands & LiteLLM & 5-Repo Audit:**
   - Audited 449 commits across Aider, SWE-agent, Browser-use, OpenHands, and LiteLLM.
   - Documented empirical shift: 13.6% noise reduction on repos with deletions, and zero false positives on Go/Rust unanalyzed suites.
-  - Published comprehensive comparative audit in [`docs/audit/V0_1_VS_V0_2_COMPARISON.md`](file:///Users/shaurya/Desktop/moonshot/agent-proctor/docs/audit/V0_1_VS_V0_2_COMPARISON.md).
+  - Published comprehensive comparative audit in [`docs/audit/V0_1_VS_V0_2_COMPARISON.md`](audit/V0_1_VS_V0_2_COMPARISON.md).
 
 ### Week 2: Dynamic Red/Green Verification (Pytest & Vitest) [Next Phase]
 - [ ] Add `proctor verify --runner pytest` in `proctor-cli`.

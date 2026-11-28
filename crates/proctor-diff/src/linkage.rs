@@ -50,10 +50,17 @@ impl LinkageStrategy for BareTokenLinker {
         head_test: &ParsedTest,
         diff: &SemanticDiff,
     ) -> LinkageVerdict {
-        for sym in base_test.body_symbols.iter().chain(head_test.body_symbols.iter()) {
+        for sym in base_test
+            .body_symbols
+            .iter()
+            .chain(head_test.body_symbols.iter())
+        {
             if diff.changed_symbols.contains(sym) {
                 return LinkageVerdict::Linked {
-                    evidence: format!("Bare identifier '{}' matches modified production symbol", sym),
+                    evidence: format!(
+                        "Bare identifier '{}' matches modified production symbol",
+                        sym
+                    ),
                 };
             }
         }
@@ -80,7 +87,11 @@ impl LinkageStrategy for ScopedImportLinker {
 
         // Find candidate matching symbols
         let mut matching_symbols = Vec::new();
-        for sym in base_test.body_symbols.iter().chain(head_test.body_symbols.iter()) {
+        for sym in base_test
+            .body_symbols
+            .iter()
+            .chain(head_test.body_symbols.iter())
+        {
             if diff.changed_symbols.contains(sym) {
                 matching_symbols.push(sym.clone());
             }
@@ -95,7 +106,9 @@ impl LinkageStrategy for ScopedImportLinker {
         // Verify if any changed source file that defines one of these symbols is actually
         // imported by the test file or co-located by directory/path proximity.
         for (src_path, src) in &diff.head_sources {
-            let src_defines_match = matching_symbols.iter().any(|sym| src.defined_symbols.contains(sym));
+            let src_defines_match = matching_symbols
+                .iter()
+                .any(|sym| src.defined_symbols.contains(sym));
             if !src_defines_match {
                 continue;
             }
@@ -154,7 +167,9 @@ impl LinkageStrategy for ScopedImportLinker {
         // Stage 2: Bounded 2-hop transitive check (excluding ubiquitous hub modules)
         if let Some(imports) = test_imports {
             for (src_path, src) in &diff.head_sources {
-                let src_defines_match = matching_symbols.iter().any(|sym| src.defined_symbols.contains(sym));
+                let src_defines_match = matching_symbols
+                    .iter()
+                    .any(|sym| src.defined_symbols.contains(sym));
                 if !src_defines_match {
                     continue;
                 }
@@ -165,7 +180,10 @@ impl LinkageStrategy for ScopedImportLinker {
 
                 // Check intermediate sources in raw_head_files
                 for (inter_path, inter_content) in &diff.raw_head_files {
-                    if inter_path == src_path || crate::is_test_file(inter_path) || is_hub_module(inter_path) {
+                    if inter_path == src_path
+                        || crate::is_test_file(inter_path)
+                        || is_hub_module(inter_path)
+                    {
                         continue;
                     }
                     let inter_stem = Path::new(inter_path)
@@ -181,10 +199,7 @@ impl LinkageStrategy for ScopedImportLinker {
                     let test_imports_inter = imports.iter().any(|imp| imp.contains(inter_stem));
                     if test_imports_inter && inter_content.contains(target_stem) {
                         return LinkageVerdict::TransitiveAmbiguity {
-                            chain: format!(
-                                "{} -> {} -> {}",
-                                test_file, inter_path, src_path
-                            ),
+                            chain: format!("{} -> {} -> {}", test_file, inter_path, src_path),
                         };
                     }
                 }
@@ -242,10 +257,18 @@ fn check_path_proximity(test_path: &str, src_path: &str) -> bool {
         .replace("lib/", "")
         .replace("pkg/", "");
 
-    let test_stem = Path::new(&clean_test).file_stem().and_then(|s| s.to_str()).unwrap_or("");
-    let src_stem = Path::new(&clean_src).file_stem().and_then(|s| s.to_str()).unwrap_or("");
+    let test_stem = Path::new(&clean_test)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("");
+    let src_stem = Path::new(&clean_src)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("");
 
-    test_stem == src_stem || clean_test.starts_with(&clean_src) || clean_src.starts_with(&clean_test)
+    test_stem == src_stem
+        || clean_test.starts_with(&clean_src)
+        || clean_src.starts_with(&clean_test)
 }
 
 #[cfg(test)]
@@ -262,7 +285,8 @@ mod tests {
         );
         base_files.insert(
             "tests/test_auth.py".to_string(),
-            "from app.auth import login\ndef test_auth():\n    assert format('x') == 'x'\n".to_string(),
+            "from app.auth import login\ndef test_auth():\n    assert format('x') == 'x'\n"
+                .to_string(),
         );
 
         let mut head_files = HashMap::new();
@@ -272,7 +296,8 @@ mod tests {
         );
         head_files.insert(
             "tests/test_auth.py".to_string(),
-            "from app.auth import login\ndef test_auth():\n    assert format('y') == 'y'\n".to_string(),
+            "from app.auth import login\ndef test_auth():\n    assert format('y') == 'y'\n"
+                .to_string(),
         );
 
         let diff = SemanticDiff::build(&base_files, &head_files).unwrap();
@@ -288,7 +313,9 @@ mod tests {
         let scoped = ScopedImportLinker;
         let scoped_verdict = scoped.check_linkage(&pair.base_test, &pair.head_test, &diff);
         assert!(!scoped_verdict.is_linked());
-        assert!(scoped_verdict.evidence_or_reason().contains("no import or path proximity"));
+        assert!(scoped_verdict
+            .evidence_or_reason()
+            .contains("no import or path proximity"));
     }
 
     #[test]
@@ -328,7 +355,9 @@ mod tests {
         let scoped = ScopedImportLinker;
         let scoped_verdict = scoped.check_linkage(&pair.base_test, &pair.head_test, &diff);
         assert!(scoped_verdict.is_ambiguous());
-        assert!(scoped_verdict.evidence_or_reason().contains("user_service.py -> src/repo/user_repo.py"));
+        assert!(scoped_verdict
+            .evidence_or_reason()
+            .contains("user_service.py -> src/repo/user_repo.py"));
     }
 
     #[test]
@@ -344,7 +373,8 @@ mod tests {
         );
         base_files.insert(
             "tests/test_billing.py".to_string(),
-            "from src import constants\ndef test_charge():\n    assert get_user(1) == {'id': 1}\n".to_string(),
+            "from src import constants\ndef test_charge():\n    assert get_user(1) == {'id': 1}\n"
+                .to_string(),
         );
 
         let mut head_files = HashMap::new();

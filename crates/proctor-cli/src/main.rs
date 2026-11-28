@@ -409,9 +409,12 @@ fn run_scan(
     let mut waiver_set = proctor_core::InTreeWaiverStore::new(Path::new(".")).load_waivers();
 
     // Env-based waivers are strictly parsed in CI when GITHUB_ACTIONS is present or env set.
-    if std::env::var("GITHUB_ACTIONS").is_ok() || std::env::var("PROCTOR_VERIFIED_WAIVERS").is_ok() {
+    if std::env::var("GITHUB_ACTIONS").is_ok() || std::env::var("PROCTOR_VERIFIED_WAIVERS").is_ok()
+    {
         let env_set = proctor_core::EnvWaiverStore.load_waivers();
-        waiver_set.maintainer_waivers.extend(env_set.maintainer_waivers);
+        waiver_set
+            .maintainer_waivers
+            .extend(env_set.maintainer_waivers);
         waiver_set.author_acks.extend(env_set.author_acks);
     }
 

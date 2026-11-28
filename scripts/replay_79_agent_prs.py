@@ -5,24 +5,27 @@ Replays the exact 79 Agent PR dataset with the current compiled binary
 to produce an apples-to-apples comparison against the previous version.
 """
 
+import argparse
 import concurrent.futures
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
 import time
 from pathlib import Path
 
-PROCTOR = "/Users/shaurya/Desktop/moonshot/agent-proctor/target/release/proctor"
-OLD_RESULTS_FILE = Path("/Users/shaurya/.gemini/antigravity/brain/15d6625d-3f0d-40f7-8742-b888790eca64/scratch/scaled_sweep_results.json")
-OUT_DIR = Path("/Users/shaurya/.gemini/antigravity/brain/15d6625d-3f0d-40f7-8742-b888790eca64/scratch")
+REPO_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_PROCTOR = REPO_ROOT / "target" / "release" / "proctor"
+DEFAULT_OLD_RESULTS = REPO_ROOT / "benchmarks" / "results" / "linkage_sweep_results.json"
+DEFAULT_OUT_DIR = REPO_ROOT / "benchmarks" / "results"
 
 def run(cmd, cwd=None, timeout=60):
     return subprocess.run(cmd, cwd=cwd, text=True, capture_output=True, timeout=timeout)
 
 def fetch_and_scan(item):
-    idx, pr, tmp_root = item
+    idx, pr, tmp_root, proctor_bin = item
     repo = pr["repo"]
     num = pr["number"]
 
@@ -54,13 +57,13 @@ def fetch_and_scan(item):
 
         # 3. Scan in Default mode (Scoped Linker)
         p_def = run(
-            [PROCTOR, "scan", "--base", base, "--head", head, "--linkage", "scoped", "--format", "json", "--receipt", str(receipt_file)],
+            [proctor_bin, "scan", "--base", base, "--head", head, "--linkage", "scoped", "--format", "json", "--receipt", str(receipt_file)],
             cwd=repo_dir,
             timeout=30,
         )
         # 4. Scan in Policy mode
         p_pol = run(
-            [PROCTOR, "scan", "--base", base, "--head", head, "--linkage", "scoped", "--protect-existing-tests", "--format", "json"],
+            [proctor_bin, "scan", "--base", base, "--head", head, "--linkage", "scoped", "--protect-existing-tests", "--format", "json"],
             cwd=repo_dir,
             timeout=30,
         )
@@ -92,20 +95,34 @@ def fetch_and_scan(item):
         return None
 
 def main():
-    if not os.path.exists(PROCTOR):
-        print(f"Error: binary not found at {PROCTOR}", file=sys.stderr)
+    parser = argparse.ArgumentParser(description="Replay Agent PR benchmark sweep with current binary.")
+    parser.add_argument("--proctor-bin", default=os.environ.get("PROCTOR_BIN", str(DEFAULT_PROCTOR)), help="Path to proctor binary")
+    parser.add_argument("--old-results", default=os.environ.get("OLD_RESULTS_FILE", str(DEFAULT_OLD_RESULTS)), help="Path to baseline sweep JSON results")
+    parser.add_argument("--out-dir", default=os.environ.get("OUT_DIR", str(DEFAULT_OUT_DIR)), help="Directory to save sweep results")
+    args = parser.parse_args()
+
+    proctor_path = shutil.which(args.proctor_bin) or args.proctor_bin
+    if not os.path.exists(proctor_path):
+        print(f"Error: binary not found at {proctor_path}. Build it first with `cargo build --release`.", file=sys.stderr)
         sys.exit(1)
 
-    with open(OLD_RESULTS_FILE) as f:
+    if not os.path.exists(args.old_results):
+        print(f"Error: baseline results file not found at {args.old_results}.", file=sys.stderr)
+        sys.exit(1)
+
+    with open(args.old_results) as f:
         old_prs = json.load(f)
 
     print(f"Loaded {len(old_prs)} candidate PRs from previous run.")
-    print(f"Replaying with current binary: {PROCTOR}...")
+    print(f"Replaying with binary: {proctor_path}...")
+
+    out_dir = Path(args.out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
 
     results = []
     t0 = time.time()
     with tempfile.TemporaryDirectory(prefix="proctor-replay-") as tmp:
-        items = [(i, pr, tmp) for i, pr in enumerate(old_prs)]
+        items = [(i, pr, tmp, proctor_path) for i, pr in enumerate(old_prs)]
         with concurrent.futures.ThreadPoolExecutor(max_workers=6) as ex:
             for i, res in enumerate(ex.map(fetch_and_scan, items)):
                 if res is not None:
@@ -116,7 +133,7 @@ def main():
     elapsed = time.time() - t0
     print(f"\nReplay complete in {elapsed:.1f}s. Scanned {len(results)} PRs successfully.")
 
-    out_file = OUT_DIR / "current_79_sweep_results.json"
+    out_file = out_dir / "current_79_sweep_results.json"
     with open(out_file, "w") as f:
         json.dump(results, f, indent=2)
 

@@ -1,5 +1,14 @@
 # Security Policy
 
+## Supported Versions
+
+Security fixes and integrity updates are officially supported for the following releases:
+
+| Version | Supported          |
+| ------- | ------------------ |
+| 0.2.x   | :white_check_mark: |
+| < 0.2.0 | :x:                |
+
 ## Reporting Security Vulnerabilities
 
 `agent-proctor` is an anticheat and code integrity gate. The integrity of our detection lattices and policy enforcement is our highest priority.

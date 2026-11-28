@@ -987,7 +987,10 @@ mod tests {
 
     #[test]
     fn receipt_flags_unanalyzed_languages_and_is_quiet_when_nothing_changed() {
-        let base = HashMap::from([("spec/a_spec.rb".to_string(), "describe 'foo' do\nend\n".to_string())]);
+        let base = HashMap::from([(
+            "spec/a_spec.rb".to_string(),
+            "describe 'foo' do\nend\n".to_string(),
+        )]);
         let head = HashMap::new();
         let diff = proctor_diff::SemanticDiff::build(&base, &head).unwrap();
         let r = render_receipt(&diff, &[]);
@@ -1092,8 +1095,7 @@ mod tests {
 
     #[test]
     fn receipt_notes_parse_errors_quietly() {
-        let mut diff =
-            proctor_diff::SemanticDiff::build(&HashMap::new(), &HashMap::new()).unwrap();
+        let mut diff = proctor_diff::SemanticDiff::build(&HashMap::new(), &HashMap::new()).unwrap();
         diff.parse_errors.push((
             "vendor/huge_generated.py".to_string(),
             "Syntax error detected in test file".to_string(),

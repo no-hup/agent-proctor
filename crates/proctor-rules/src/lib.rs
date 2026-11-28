@@ -229,7 +229,8 @@ fn evaluate_assertion_lock(diff: &SemanticDiff, policy: &Policy, findings: &mut 
             proctor_core::LinkageMode::Bare => Box::new(proctor_diff::BareTokenLinker),
             proctor_core::LinkageMode::Scoped => Box::new(proctor_diff::ScopedImportLinker),
         };
-        let linkage_verdict = diff.test_links_changed_code_with(base_test, head_test, linkage_strategy.as_ref());
+        let linkage_verdict =
+            diff.test_links_changed_code_with(base_test, head_test, linkage_strategy.as_ref());
         let linked = linkage_verdict.is_linked();
         let is_transitive = linkage_verdict.is_ambiguous();
 
@@ -1817,13 +1818,25 @@ def assert_node(node, expected):
     #[test]
     fn test_mirror_check_deduplicates_and_respects_policy_mode() {
         let base = std::collections::HashMap::from([
-            ("tests/test_ui.py".to_string(), "def test_screen():\n    assert get_screen() == 'tide-moon'\n".to_string()),
-            ("src/a.py".to_string(), "def get_screen(): return 'tide-moon'\n".to_string()),
+            (
+                "tests/test_ui.py".to_string(),
+                "def test_screen():\n    assert get_screen() == 'tide-moon'\n".to_string(),
+            ),
+            (
+                "src/a.py".to_string(),
+                "def get_screen(): return 'tide-moon'\n".to_string(),
+            ),
             ("src/b.py".to_string(), "SCREEN = 'tide-moon'\n".to_string()),
         ]);
         let head = std::collections::HashMap::from([
-            ("tests/test_ui.py".to_string(), "def test_screen():\n    assert get_screen() == 'tide-lamp'\n".to_string()),
-            ("src/a.py".to_string(), "def get_screen(): return 'tide-lamp'\n".to_string()),
+            (
+                "tests/test_ui.py".to_string(),
+                "def test_screen():\n    assert get_screen() == 'tide-lamp'\n".to_string(),
+            ),
+            (
+                "src/a.py".to_string(),
+                "def get_screen(): return 'tide-lamp'\n".to_string(),
+            ),
             ("src/b.py".to_string(), "SCREEN = 'tide-lamp'\n".to_string()),
         ]);
         let diff = SemanticDiff::build(&base, &head).unwrap();
@@ -1833,8 +1846,17 @@ def assert_node(node, expected):
             .iter()
             .filter(|f| f.message.contains("shifted to mirror"))
             .collect();
-        assert_eq!(mirror_default.len(), 1, "Must emit once per (test, literal): {:?}", mirror_default);
-        assert_eq!(mirror_default[0].tier, RuleTier::Report, "Default mode should be Report, not Guard");
+        assert_eq!(
+            mirror_default.len(),
+            1,
+            "Must emit once per (test, literal): {:?}",
+            mirror_default
+        );
+        assert_eq!(
+            mirror_default[0].tier,
+            RuleTier::Report,
+            "Default mode should be Report, not Guard"
+        );
 
         let pol = Policy {
             protect_existing_tests: true,
@@ -1846,7 +1868,11 @@ def assert_node(node, expected):
             .filter(|f| f.message.contains("shifted to mirror"))
             .collect();
         assert_eq!(mirror_policy.len(), 1);
-        assert_eq!(mirror_policy[0].tier, RuleTier::Guard, "Policy mode should escalate mirror to Guard");
+        assert_eq!(
+            mirror_policy[0].tier,
+            RuleTier::Guard,
+            "Policy mode should escalate mirror to Guard"
+        );
     }
 
     #[test]

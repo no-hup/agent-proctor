@@ -7,7 +7,10 @@ set -euo pipefail
 V1_BIN="${1:-/tmp/proctor-v0.1.0}"
 V2_BIN="${2:-/tmp/proctor-v0.2.0}"
 WORKDIR="${3:-/tmp/proctor-audits}"
-OUTPUT_DOC="/Users/shaurya/Desktop/moonshot/agent-proctor/docs/audit/V0_1_VS_V0_2_COMPARISON.md"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+OUTPUT_DOC="${4:-$REPO_ROOT/docs/audit/V0_1_VS_V0_2_COMPARISON.md}"
+export OUTPUT_DOC
 
 mkdir -p "$WORKDIR"
 mkdir -p "$(dirname "$OUTPUT_DOC")"
@@ -60,7 +63,7 @@ import os
 import re
 
 workdir = os.environ.get("WORKDIR", "/tmp/proctor-audits")
-output_path = "/Users/shaurya/Desktop/moonshot/agent-proctor/docs/audit/V0_1_VS_V0_2_COMPARISON.md"
+output_path = os.environ.get("OUTPUT_DOC", os.path.join(workdir, "V0_1_VS_V0_2_COMPARISON.md"))
 
 repos = [
     ("aider-AI/aider", "aider"),
@@ -153,4 +156,3 @@ with open(output_path, "w") as f:
 
 print(f"Report written to {output_path}")
 EOF
-chmod +x /Users/shaurya/Desktop/moonshot/agent-proctor/scripts/compare_audits.sh

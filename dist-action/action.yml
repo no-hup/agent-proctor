@@ -45,12 +45,15 @@ runs:
   steps:
     - name: Fetch PR commit objects
       shell: bash
+      env:
+        BASE_REF: ${{ inputs.base-ref }}
+        HEAD_REF: ${{ inputs.head-ref }}
       run: |
-        if [ -n "${{ inputs.base-ref }}" ] && [ "${{ inputs.base-ref }}" != "origin/main" ]; then
-          git fetch --depth=1 origin "${{ inputs.base-ref }}" || true
+        if [ -n "$BASE_REF" ] && [ "$BASE_REF" != "origin/main" ]; then
+          git fetch --depth=1 origin "$BASE_REF" || true
         fi
-        if [ -n "${{ inputs.head-ref }}" ] && [ "${{ inputs.head-ref }}" != "HEAD" ]; then
-          git fetch --depth=1 origin "${{ inputs.head-ref }}" || true
+        if [ -n "$HEAD_REF" ] && [ "$HEAD_REF" != "HEAD" ]; then
+          git fetch --depth=1 origin "$HEAD_REF" || true
         fi
 
     - name: Verify GitHub-attested reviewer waivers & acks
@@ -60,17 +63,18 @@ runs:
         GITHUB_REPOSITORY: ${{ github.repository }}
         PR_NUMBER: ${{ github.event.pull_request.number }}
         GITHUB_TOKEN: ${{ inputs.github-token }}
+        BASE_REF: ${{ inputs.base-ref }}
       run: |
         if [ -n "$PR_NUMBER" ]; then
           # Extract review_mode strictly from base policy to prevent PR tampering
           REVIEW_MODE="ack"
-          if git cat-file -e "${{ inputs.base-ref }}:proctor.toml" 2>/dev/null; then
-            MODE_EXTRACT=$(git show "${{ inputs.base-ref }}:proctor.toml" | grep -E '^review_mode\s*=' | sed -E 's/review_mode\s*=\s*["'"'"']([^"'"'"']+)["'"'"'].*/\1/' || true)
+          if git cat-file -e "$BASE_REF:proctor.toml" 2>/dev/null; then
+            MODE_EXTRACT=$(git show "$BASE_REF:proctor.toml" | grep -E '^review_mode\s*=' | sed -E 's/review_mode\s*=\s*["'"'"']([^"'"'"']+)["'"'"'].*/\1/' || true)
             if [ -n "$MODE_EXTRACT" ]; then
               REVIEW_MODE="$MODE_EXTRACT"
             fi
-          elif git cat-file -e "${{ inputs.base-ref }}:.proctor.toml" 2>/dev/null; then
-            MODE_EXTRACT=$(git show "${{ inputs.base-ref }}:.proctor.toml" | grep -E '^review_mode\s*=' | sed -E 's/review_mode\s*=\s*["'"'"']([^"'"'"']+)["'"'"'].*/\1/' || true)
+          elif git cat-file -e "$BASE_REF:.proctor.toml" 2>/dev/null; then
+            MODE_EXTRACT=$(git show "$BASE_REF:.proctor.toml" | grep -E '^review_mode\s*=' | sed -E 's/review_mode\s*=\s*["'"'"']([^"'"'"']+)["'"'"'].*/\1/' || true)
             if [ -n "$MODE_EXTRACT" ]; then
               REVIEW_MODE="$MODE_EXTRACT"
             fi
@@ -88,6 +92,8 @@ runs:
 
     - name: Install agent-proctor release binary
       shell: bash
+      env:
+        PROCTOR_VERSION: ${{ inputs.version }}
       run: |
         if command -v proctor &> /dev/null; then
           exit 0
@@ -103,7 +109,7 @@ runs:
         fi
 
         # Download precompiled binary from public release asset
-        URL="https://github.com/no-hup/agent-proctor/releases/download/${{ inputs.version }}/proctor-${OS}-${TARGET}.tar.gz"
+        URL="https://github.com/no-hup/agent-proctor/releases/download/$PROCTOR_VERSION/proctor-${OS}-${TARGET}.tar.gz"
         mkdir -p /tmp/proctor-bin
         if curl -sLf "$URL" -o /tmp/proctor.tar.gz; then
           tar -xzf /tmp/proctor.tar.gz -C /tmp/proctor-bin
@@ -111,7 +117,7 @@ runs:
           echo "/tmp/proctor-bin" >> $GITHUB_PATH
           echo "proctor: Downloaded precompiled binary from $URL"
         else
-          echo "::error::agent-proctor precompiled release binary could not be downloaded from $URL. Please verify inputs.version ('${{ inputs.version }}') or ensure a release asset exists for $OS-$TARGET."
+          echo "::error::agent-proctor precompiled release binary could not be downloaded from $URL. Please verify inputs.version ('$PROCTOR_VERSION') or ensure a release asset exists for $OS-$TARGET."
           exit 1
         fi
 
@@ -119,34 +125,31 @@ runs:
       shell: bash
       env:
         PROCTOR_VERIFIED_WAIVERS: ${{ steps.waivers.outputs.verified_waivers }}
+        BASE_REF: ${{ inputs.base-ref }}
+        HEAD_REF: ${{ inputs.head-ref }}
+        SARIF_FILE: ${{ inputs.sarif-file }}
+        STRICT: ${{ inputs.strict }}
+        EXPERIMENTAL_PROBE: ${{ inputs.experimental-probe }}
+        ENFORCE: ${{ inputs.enforce }}
       run: |
-        ARGS="--base ${{ inputs.base-ref }} --head ${{ inputs.head-ref }} --sarif ${{ inputs.sarif-file }}"
+        ARGS="--base $BASE_REF --head $HEAD_REF --sarif $SARIF_FILE"
         
-        if [ "${{ inputs.strict }}" = "true" ]; then
+        if [ "$STRICT" = "true" ]; then
           ARGS="$ARGS --strict"
         fi
         
-        if [ "${{ inputs.experimental-probe }}" = "true" ]; then
+        if [ "$EXPERIMENTAL_PROBE" = "true" ]; then
           ARGS="$ARGS --experimental-probe"
+        fi
+
+        if [ -n "$GITHUB_STEP_SUMMARY" ]; then
+          ARGS="$ARGS --receipt $GITHUB_STEP_SUMMARY"
         fi
 
         EXIT_CODE=0
         proctor scan $ARGS || EXIT_CODE=$?
 
-        # Append clean markdown step summary if running in GitHub Actions
-        if [ -n "$GITHUB_STEP_SUMMARY" ]; then
-          echo "### 🛡️ agent-proctor Summary" >> "$GITHUB_STEP_SUMMARY"
-          if [ "$EXIT_CODE" -eq 0 ]; then
-            echo "✅ **All test suite integrity and anticheat checks passed.**" >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "⚠️ **agent-proctor detected test modifications or anticheat violations.** (exit code $EXIT_CODE)" >> "$GITHUB_STEP_SUMMARY"
-            if [ -f "${{ inputs.sarif-file }}" ]; then
-              echo "Detailed AST findings recorded to \`${{ inputs.sarif-file }}\`." >> "$GITHUB_STEP_SUMMARY"
-            fi
-          fi
-        fi
-
-        if [ "${{ inputs.enforce }}" = "true" ]; then
+        if [ "$ENFORCE" = "true" ]; then
           if [ "$EXIT_CODE" -ne 0 ]; then
             echo "::error::agent-proctor policy violation detected (exit code $EXIT_CODE). PR blocked."
             exit $EXIT_CODE

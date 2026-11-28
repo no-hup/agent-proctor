@@ -194,9 +194,15 @@ fn walk_go_test_nodes(
 
 fn is_go_test_name(name: &str) -> bool {
     (name.starts_with("Test") && name.len() > 4 && !name.chars().nth(4).unwrap().is_lowercase())
-        || (name.starts_with("Fuzz") && name.len() > 4 && !name.chars().nth(4).unwrap().is_lowercase())
-        || (name.starts_with("Benchmark") && name.len() > 9 && !name.chars().nth(9).unwrap().is_lowercase())
-        || (name.starts_with("Example") && name.len() > 7 && !name.chars().nth(7).unwrap().is_lowercase())
+        || (name.starts_with("Fuzz")
+            && name.len() > 4
+            && !name.chars().nth(4).unwrap().is_lowercase())
+        || (name.starts_with("Benchmark")
+            && name.len() > 9
+            && !name.chars().nth(9).unwrap().is_lowercase())
+        || (name.starts_with("Example")
+            && name.len() > 7
+            && !name.chars().nth(7).unwrap().is_lowercase())
 }
 
 fn is_go_helper_name(name: &str) -> bool {
@@ -352,7 +358,11 @@ fn is_testify_assertion(fn_text: &str) -> bool {
     let receiver = parts[0];
     let method = parts[1];
 
-    if receiver == "assert" || receiver == "require" || receiver.ends_with("Assert") || receiver.ends_with("Require") {
+    if receiver == "assert"
+        || receiver == "require"
+        || receiver.ends_with("Assert")
+        || receiver.ends_with("Require")
+    {
         matches!(
             method,
             "Equal"
@@ -383,8 +393,11 @@ fn is_testify_assertion(fn_text: &str) -> bool {
 fn determine_testify_strength(fn_text: &str) -> AssertionStrength {
     let method = fn_text.split('.').next_back().unwrap_or(fn_text);
     match method {
-        "Equal" | "EqualValues" | "Exactly" | "JSONEq" | "ElementsMatch" | "NoError" | "Nil" | "NotNil" | "NotEqual" => AssertionStrength::Exact,
-        "True" | "False" | "Empty" | "NotEmpty" | "Len" | "Subset" | "Contains" | "NotContains" => AssertionStrength::Weak,
+        "Equal" | "EqualValues" | "Exactly" | "JSONEq" | "ElementsMatch" | "NoError" | "Nil"
+        | "NotNil" | "NotEqual" => AssertionStrength::Exact,
+        "True" | "False" | "Empty" | "NotEmpty" | "Len" | "Subset" | "Contains" | "NotContains" => {
+            AssertionStrength::Weak
+        }
         _ => AssertionStrength::Weak,
     }
 }
@@ -414,10 +427,14 @@ fn extract_call_symbols_and_literal(
                         symbols.push(sym);
                     }
                 }
-                "interpreted_string_literal" | "raw_string_literal" | "int_literal" | "float_literal"
-                    if expected_literal.is_none() => {
-                        expected_literal = Some(node_text(child, source));
-                    }
+                "interpreted_string_literal"
+                | "raw_string_literal"
+                | "int_literal"
+                | "float_literal"
+                    if expected_literal.is_none() =>
+                {
+                    expected_literal = Some(node_text(child, source));
+                }
                 _ => {}
             }
         }
@@ -466,10 +483,14 @@ fn extract_go_if_assertion(if_node: Node, source: &str) -> Option<ParsedAssertio
                     referenced_symbols.push(sym);
                 }
             }
-            "interpreted_string_literal" | "raw_string_literal" | "int_literal" | "float_literal"
-                if expected_literal.is_none() => {
-                    expected_literal = Some(node_text(child, source));
-                }
+            "interpreted_string_literal"
+            | "raw_string_literal"
+            | "int_literal"
+            | "float_literal"
+                if expected_literal.is_none() =>
+            {
+                expected_literal = Some(node_text(child, source));
+            }
             _ => {}
         }
     }
@@ -485,21 +506,22 @@ fn extract_go_if_assertion(if_node: Node, source: &str) -> Option<ParsedAssertio
 }
 
 /// Detects table-driven test struct slices: `tests := []struct{...}{ {row1}, {row2} }` or `[]testCase{ ... }`.
-fn extract_table_driven_rows(
-    node: Node,
-    source: &str,
-    parametrized_hashes: &mut Vec<u64>,
-) {
+fn extract_table_driven_rows(node: Node, source: &str, parametrized_hashes: &mut Vec<u64>) {
     let type_node = match node.child_by_field_name("type") {
         Some(t) => t,
         None => return,
     };
 
     let type_kind = type_node.kind();
-    let is_slice_or_array = type_kind == "slice_type" || type_kind == "array_type" || type_kind == "map_type";
+    let is_slice_or_array =
+        type_kind == "slice_type" || type_kind == "array_type" || type_kind == "map_type";
     let type_text = node_text(type_node, source);
 
-    if !is_slice_or_array && !type_text.contains("struct") && !type_text.ends_with("Test") && !type_text.ends_with("TestCase") {
+    if !is_slice_or_array
+        && !type_text.contains("struct")
+        && !type_text.ends_with("Test")
+        && !type_text.ends_with("TestCase")
+    {
         return;
     }
 
@@ -533,13 +555,26 @@ fn extract_name_field(node: Node, source: &str) -> Option<String> {
         if child.kind() == "keyed_element" && child.child_count() >= 2 {
             if let (Some(k), Some(v)) = (child.child(0), child.child(1)) {
                 let key_text = node_text(k, source).trim().to_string();
-                if key_text == "name" || key_text == "Name" || key_text == "desc" || key_text == "testName" {
+                if key_text == "name"
+                    || key_text == "Name"
+                    || key_text == "desc"
+                    || key_text == "testName"
+                {
                     let val_text = node_text(v, source);
-                    return Some(val_text.trim().trim_matches('"').trim_matches('`').to_string());
+                    return Some(
+                        val_text
+                            .trim()
+                            .trim_matches('"')
+                            .trim_matches('`')
+                            .to_string(),
+                    );
                 }
             }
         }
-        if child.kind() == "composite_literal" || child.kind() == "literal_value" || child.kind() == "literal_element" {
+        if child.kind() == "composite_literal"
+            || child.kind() == "literal_value"
+            || child.kind() == "literal_element"
+        {
             if let Some(found) = extract_name_field(child, source) {
                 return Some(found);
             }
@@ -690,7 +725,10 @@ func TestAddTable(t *testing.T) {
 }
 "#;
         let parsed_extra = parse_go_test_file("calc_test.go", code_with_extra_field).unwrap();
-        assert_eq!(parsed_extra.tests[0].parametrized_hashes, test.parametrized_hashes);
+        assert_eq!(
+            parsed_extra.tests[0].parametrized_hashes,
+            test.parametrized_hashes
+        );
     }
 
     #[test]

@@ -4,11 +4,7 @@ use proctor_probe::TestVerificationResult;
 /// Black-box trait governing how dynamic mutation/regression verification results
 /// alter static findings in the final report.
 pub trait EscalatorStrategy {
-    fn apply_verification(
-        &self,
-        findings: &mut Vec<Finding>,
-        res: &TestVerificationResult,
-    );
+    fn apply_verification(&self, findings: &mut Vec<Finding>, res: &TestVerificationResult);
 }
 
 /// Recommended default: Evidence annotator.
@@ -18,11 +14,7 @@ pub trait EscalatorStrategy {
 pub struct AnnotatorEscalator;
 
 impl EscalatorStrategy for AnnotatorEscalator {
-    fn apply_verification(
-        &self,
-        findings: &mut Vec<Finding>,
-        res: &TestVerificationResult,
-    ) {
+    fn apply_verification(&self, findings: &mut Vec<Finding>, res: &TestVerificationResult) {
         match &res.status {
             proctor_probe::VerificationStatus::Discriminating { reason } => {
                 eprintln!(
@@ -31,7 +23,10 @@ impl EscalatorStrategy for AnnotatorEscalator {
                 );
                 for f in findings.iter_mut() {
                     if f.file_path == res.test_file && f.rule_id == RuleId::AssertionLock {
-                        f.message.push_str(&format!(" [escalator: discriminating against base: {}]", reason));
+                        f.message.push_str(&format!(
+                            " [escalator: discriminating against base: {}]",
+                            reason
+                        ));
                     }
                 }
             }
@@ -67,7 +62,10 @@ impl EscalatorStrategy for AnnotatorEscalator {
                         f.tier = RuleTier::Guard;
                         f.verdict = Verdict::Block {
                             rule: RuleId::AssertionLock,
-                            evidence: format!("Escalator: Test is broken on head commit: {}", error),
+                            evidence: format!(
+                                "Escalator: Test is broken on head commit: {}",
+                                error
+                            ),
                         };
                     }
                 }
@@ -93,11 +91,7 @@ impl EscalatorStrategy for AnnotatorEscalator {
 pub struct EraserEscalator;
 
 impl EscalatorStrategy for EraserEscalator {
-    fn apply_verification(
-        &self,
-        findings: &mut Vec<Finding>,
-        res: &TestVerificationResult,
-    ) {
+    fn apply_verification(&self, findings: &mut Vec<Finding>, res: &TestVerificationResult) {
         match &res.status {
             proctor_probe::VerificationStatus::Discriminating { reason } => {
                 eprintln!(
