@@ -10,20 +10,25 @@ Deterministic PR receipts for test changes — zero LLM cost, zero code egress.
 
 ## Install
 
+### Quick Install (macOS / Linux 1-liner)
+
 ```bash
-# macOS / Linux prebuilt binary (zero-egress, <2s)
-OS=$(uname -s | tr '[:upper:]' '[:lower:]')
-ARCH=$(uname -m | sed 's/arm64/aarch64/')
-curl -sSfL "https://github.com/no-hup/agent-proctor/releases/latest/download/proctor-${OS}-${ARCH}.tar.gz" | tar -xz && sudo mv proctor /usr/local/bin/
+curl -fsSL https://raw.githubusercontent.com/no-hup/agent-proctor/main/install.sh | sh
 ```
 
-Or build from source with Cargo:
+### Prebuilt binary via cargo-binstall
+
+```bash
+cargo binstall agent-proctor
+```
+
+### Build from source with Cargo
 
 ```bash
 cargo install --git https://github.com/no-hup/agent-proctor proctor-cli
 ```
 
-Or drop **Observe Mode** into GitHub Actions (posts PR receipts without failing CI):
+### Observe Mode in GitHub Actions (posts PR receipts without failing CI)
 
 ```yaml
 - uses: no-hup/proctor-action@v1
@@ -32,6 +37,25 @@ Or drop **Observe Mode** into GitHub Actions (posts PR receipts without failing 
     head-ref: ${{ github.event.pull_request.head.sha }}
     enforce: false
 ```
+
+## Empirical Benchmarks & Real Catches
+
+`agent-proctor` is validated against real human commits, real-world autonomous coding agent PRs, and adversarial benchmark rollouts:
+
+1. **500-Commit Sweep Across Top AI Agent Repos** (`aider`, `SWE-agent`, `browser-use`, `OpenHands`, `litellm`):
+   - **0 false positives** on legitimate refactors, bugfixes, and feature additions.
+   - **Real Catch (`browser-use@84a1cc19`)**: Caught silent assertion weakening in `tests/ci/test_telemetry.py` where assertion counts were reduced without corresponding production symbol deprecation.
+2. **79 Agent PR Replay (Devin, Claude Code, GitHub Copilot)**:
+   - Evaluated against production agent PRs across open-source repositories.
+   - **21 Guard Blocks** (blocking test deletions, weakened invariants, and loosened CI gates), **5 Reviews** (flagging ambiguous assertion changes for verification), **53 Clean Passes** (0 false regressions).
+   - **Real Catch (`radiocosmology/caput#360`)**: Caught dropped assertions and a deleted test masked behind an advisory `ruff.toml` lint ignore.
+3. **Bounded 2-Hop Transitive Cascade**:
+   - Resolves multi-hop imports (`test -> service -> math.py`) while excluding hub modules (`config`, `types`, `constants`, `utils`, `logger`, `helpers`) to eliminate small-world graph dilution. Ambiguities route directly to the Smart Escalator for dynamic test verification.
+4. **120 Reconstructed GPT-5 ImpossibleBench Rollouts**:
+   - `0 / 50` (`0.0%`) false flags on clean solvable controls.
+   - Surfaced `78.6%` of intentional agent shortcuts and test modifications via Test-Change Receipts.
+
+---
 
 ## Why
 

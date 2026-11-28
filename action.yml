@@ -130,21 +130,12 @@ runs:
           ARGS="$ARGS --experimental-probe"
         fi
 
+        if [ -n "$GITHUB_STEP_SUMMARY" ]; then
+          ARGS="$ARGS --receipt $GITHUB_STEP_SUMMARY"
+        fi
+
         EXIT_CODE=0
         proctor scan $ARGS || EXIT_CODE=$?
-
-        # Append clean markdown step summary if running in GitHub Actions
-        if [ -n "$GITHUB_STEP_SUMMARY" ]; then
-          echo "### 🛡️ agent-proctor Summary" >> "$GITHUB_STEP_SUMMARY"
-          if [ "$EXIT_CODE" -eq 0 ]; then
-            echo "✅ **All test suite integrity and anticheat checks passed.**" >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "⚠️ **agent-proctor detected test modifications or anticheat violations.** (exit code $EXIT_CODE)" >> "$GITHUB_STEP_SUMMARY"
-            if [ -f "${{ inputs.sarif-file }}" ]; then
-              echo "Detailed AST findings recorded to \`${{ inputs.sarif-file }}\`." >> "$GITHUB_STEP_SUMMARY"
-            fi
-          fi
-        fi
 
         if [ "${{ inputs.enforce }}" = "true" ]; then
           if [ "$EXIT_CODE" -ne 0 ]; then

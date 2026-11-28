@@ -36,6 +36,12 @@ We measured `agent-proctor` on two independent datasets (full methodology, scrip
    * **Default Mode (Human PR CI):** `0 / 50` (`0.0%`) false flags on `original`; `22 / 70` (`31.4%`) flagged by static Guard+Report (`16/39` conflicting, `6/31` oneoff), while **Test-Change Receipts surfaced `55 / 70` (`78.6%` overall, `30/31` = `96.8%` on `oneoff`)** with paired `old → new` diffs.
    * **Policy Mode (`--protect-existing-tests` for agent loops/evals):** Treating pre-existing assertions on `base` as immutable raised Guard+Report flags to **`34 / 70` (`48.6%`; `21/39` = `53.8%` Guard on `conflicting`, `13/31` = `41.9%` on `oneoff`)** while keeping **`0 / 50` (`0.0%`)** false flags on `original`.
 
+3. **79 Real-World Agent PR Replay (Devin, Claude Code, GitHub Copilot)**:
+   * Replayed 79 agent-authored PRs across open source.
+   * **Results:** 21 Guard Blocks (preventing deleted tests and assertion drops), 5 Reviews, 53 Passes (0 false regressions).
+   * **Real Catches:** In `radiocosmology/caput#360`, an agent PR dropped two critical assertions and deleted a test masked behind an advisory `ruff.toml` lint ignore; in `browser-use@84a1cc19`, silent assertion weakening was caught without false-positive token collisions.
+   * **Bounded 2-Hop Transitive Cascade:** Scoped linkage follows multi-hop calls (`test -> service -> math.py`) while rejecting hub modules (`config`, `types`, `constants`, `utils`) to avoid small-world graph dilution.
+
 ---
 
 ### What a PR Sees in Observe Mode
@@ -73,9 +79,16 @@ And when an existing assertion is modified alongside production code, the receip
 ### Try It Locally
 
 ```bash
-OS=$(uname -s | tr '[:upper:]' '[:lower:]')
-ARCH=$(uname -m | sed 's/arm64/aarch64/')
-curl -sSfL "https://github.com/no-hup/agent-proctor/releases/latest/download/proctor-${OS}-${ARCH}.tar.gz" | tar -xz && ./proctor audit --limit 50
+# 1-liner (macOS / Linux)
+curl -fsSL https://raw.githubusercontent.com/no-hup/agent-proctor/main/install.sh | sh
+
+# Or install via cargo-binstall
+cargo binstall agent-proctor
+```
+
+Or run against any git branch:
+```bash
+proctor scan --base main
 ```
 
 Or drop Observe Mode into GitHub Actions:
