@@ -39,8 +39,9 @@ crates/
 ### Key Invariants (Non-Negotiable)
 1. **Zero LLMs in the Loop:** Never add LLM calls, prompt strings, or API clients to verification rules. Analysis must be 100% deterministic and reproducible via Tree-sitter.
 2. **Zero Network Dependencies:** Never add crates that pull in HTTP, telemetry, or network networking libraries to core analysis crates. The `test_zero_network_dependencies_in_lockfile` test must always pass.
-3. **Sub-200ms Execution for Static Scan:** `proctor scan` must remain fast enough to run in pre-commit hooks and local agent tool loops.
-4. **Strict Scope Confinement:** Never wander into unrequested refactorings. Modifying files outside the task's stated boundary will result in immediate rejection.
+3. **Decoupled Black-Box Architecture:** High-variance subsystems (Code-to-Test Linkage, Dynamic Escalation, Waiver Stores) must be decoupled behind clean, swappable Rust traits. New approaches must be implemented as isolated black boxes and validated against the benchmark harness (`scale_agent_pr_sweep.py`) before replacing defaults. Never entangle speculative heuristics into core diffing logic.
+4. **Sub-200ms Execution for Static Scan:** `proctor scan` must remain fast enough to run in pre-commit hooks and local agent tool loops.
+5. **Strict Scope Confinement:** Never wander into unrequested refactorings. Modifying files outside the task's stated boundary will result in immediate rejection.
 
 ---
 

@@ -38,8 +38,9 @@ crates/
 
 1. **Zero LLMs in the Verification Loop:** Never add LLM API calls, prompt strings, or non-deterministic heuristics to verification rules. All analysis must be 100% deterministic and reproducible via Tree-sitter AST diffing.
 2. **Zero Network Dependencies:** Never add crates that introduce network, HTTP, or telemetry dependencies. The lockfile must remain zero-network (`cargo test --test zero_network_verification` must always pass).
-3. **Sub-200ms Static Latency:** `proctor scan` runs in git hooks and CI pipelines; keep static passes fast (<50ms).
-4. **Strict Diff Hygiene:** Do not perform unrequested refactorings or alter unrelated files. Only edit the crates specified in the task issue.
+3. **Decoupled Black-Box Architecture:** High-variance subsystems (Code-to-Test Linkage, Escalation Probing, Waiver Storage) must be decoupled behind clean, swappable Rust traits (`LinkageStrategy`, `EscalatorStrategy`, `WaiverStore`). Implement new approaches as isolated black boxes and baseline them against the 439-PR benchmark suite before promoting to default. Never hardcode speculative heuristics into core AST diffing.
+4. **Sub-200ms Static Latency:** `proctor scan` runs in git hooks and CI pipelines; keep static passes fast (<50ms).
+5. **Strict Diff Hygiene:** Do not perform unrequested refactorings or alter unrelated files. Only edit the crates specified in the task issue.
 
 ---
 
