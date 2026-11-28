@@ -231,6 +231,7 @@ fn evaluate_assertion_lock(diff: &SemanticDiff, policy: &Policy, findings: &mut 
         };
         let linkage_verdict = diff.test_links_changed_code_with(base_test, head_test, linkage_strategy.as_ref());
         let linked = linkage_verdict.is_linked();
+        let is_transitive = linkage_verdict.is_ambiguous();
 
         for base_assert in &base_test.assertions {
             // A test that only follows a production rename is not a modification.
@@ -268,7 +269,7 @@ fn evaluate_assertion_lock(diff: &SemanticDiff, policy: &Policy, findings: &mut 
                         Some("under protect_existing_tests policy")
                     } else if !has_production_changes {
                         Some("while production code was untouched")
-                    } else if was_weakened && !linked {
+                    } else if was_weakened && !linked && !is_transitive {
                         Some("while none of the production code it references changed")
                     } else {
                         None
@@ -296,19 +297,38 @@ fn evaluate_assertion_lock(diff: &SemanticDiff, policy: &Policy, findings: &mut 
                             ),
                         )
                     } else if was_weakened {
-                        (
-                            Verdict::Review {
-                                finding_id: id.clone(),
-                                evidence: format!(
+                        let (evidence, message) = if is_transitive {
+                            (
+                                format!(
+                                    "Assertion weakened/dropped: '{}'. Transitive linkage detected: {}.",
+                                    base_assert.text,
+                                    linkage_verdict.evidence_or_reason()
+                                ),
+                                format!(
+                                    "Assertion weakened in test '{}' with plausible transitive dependency ({}); requires reviewer verification or smart escalation.",
+                                    test_name,
+                                    linkage_verdict.evidence_or_reason()
+                                ),
+                            )
+                        } else {
+                            (
+                                format!(
                                     "Assertion weakened/dropped: '{}'. Linked production symbol changed.",
                                     base_assert.text
                                 ),
+                                format!(
+                                    "Assertion weakened in test '{}' while referenced production code also changed.",
+                                    test_name
+                                ),
+                            )
+                        };
+                        (
+                            Verdict::Review {
+                                finding_id: id.clone(),
+                                evidence,
                             },
                             RuleTier::Report,
-                            format!(
-                                "Assertion weakened in test '{}' while referenced production code also changed.",
-                                test_name
-                            ),
+                            message,
                         )
                     } else {
                         // Equal-rank co-evolution alongside production changes: quiet under

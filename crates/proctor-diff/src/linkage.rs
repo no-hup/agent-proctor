@@ -7,6 +7,7 @@ use std::path::Path;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LinkageVerdict {
     Linked { evidence: String },
+    TransitiveAmbiguity { chain: String },
     Unlinked { reason: String },
 }
 
@@ -15,9 +16,14 @@ impl LinkageVerdict {
         matches!(self, LinkageVerdict::Linked { .. })
     }
 
+    pub fn is_ambiguous(&self) -> bool {
+        matches!(self, LinkageVerdict::TransitiveAmbiguity { .. })
+    }
+
     pub fn evidence_or_reason(&self) -> &str {
         match self {
             LinkageVerdict::Linked { evidence } => evidence,
+            LinkageVerdict::TransitiveAmbiguity { chain } => chain,
             LinkageVerdict::Unlinked { reason } => reason,
         }
     }
@@ -145,6 +151,46 @@ impl LinkageStrategy for ScopedImportLinker {
             }
         }
 
+        // Stage 2: Bounded 2-hop transitive check (excluding ubiquitous hub modules)
+        if let Some(imports) = test_imports {
+            for (src_path, src) in &diff.head_sources {
+                let src_defines_match = matching_symbols.iter().any(|sym| src.defined_symbols.contains(sym));
+                if !src_defines_match {
+                    continue;
+                }
+                let target_stem = Path::new(src_path)
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("");
+
+                // Check intermediate sources in raw_head_files
+                for (inter_path, inter_content) in &diff.raw_head_files {
+                    if inter_path == src_path || crate::is_test_file(inter_path) || is_hub_module(inter_path) {
+                        continue;
+                    }
+                    let inter_stem = Path::new(inter_path)
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("");
+
+                    if inter_stem.is_empty() {
+                        continue;
+                    }
+
+                    // Does test import the intermediate file?
+                    let test_imports_inter = imports.iter().any(|imp| imp.contains(inter_stem));
+                    if test_imports_inter && inter_content.contains(target_stem) {
+                        return LinkageVerdict::TransitiveAmbiguity {
+                            chain: format!(
+                                "{} -> {} -> {}",
+                                test_file, inter_path, src_path
+                            ),
+                        };
+                    }
+                }
+            }
+        }
+
         // If symbols matched by name but there is zero import or path connection:
         // this is the classic "format" or "validate" name collision!
         LinkageVerdict::Unlinked {
@@ -154,6 +200,32 @@ impl LinkageStrategy for ScopedImportLinker {
             ),
         }
     }
+}
+
+/// Identifies ubiquitous hub modules that should not act as transitive bridges
+/// to prevent small-world graph dilution.
+fn is_hub_module(path: &str) -> bool {
+    let lower = path.to_lowercase();
+    let stem = Path::new(&lower)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("");
+    matches!(
+        stem,
+        "config"
+            | "configs"
+            | "types"
+            | "constants"
+            | "constant"
+            | "utils"
+            | "util"
+            | "logger"
+            | "logging"
+            | "exceptions"
+            | "error"
+            | "errors"
+            | "helpers"
+    )
 }
 
 /// Normalizes test and source paths to see if they refer to the same subsystem/component.
@@ -217,5 +289,86 @@ mod tests {
         let scoped_verdict = scoped.check_linkage(&pair.base_test, &pair.head_test, &diff);
         assert!(!scoped_verdict.is_linked());
         assert!(scoped_verdict.evidence_or_reason().contains("no import or path proximity"));
+    }
+
+    #[test]
+    fn test_scoped_linker_detects_2hop_transitive_ambiguity() {
+        let mut base_files = HashMap::new();
+        base_files.insert(
+            "src/repo/user_repo.py".to_string(),
+            "def get_user(uid):\n    return {'id': uid}\n".to_string(),
+        );
+        base_files.insert(
+            "src/services/user_service.py".to_string(),
+            "from src.repo import user_repo\ndef load_user(uid):\n    return user_repo.get_user(uid)\n".to_string(),
+        );
+        base_files.insert(
+            "tests/test_controller.py".to_string(),
+            "from src.services import user_service\ndef test_profile():\n    assert get_user(1) == {'id': 1}\n".to_string(),
+        );
+
+        let mut head_files = HashMap::new();
+        head_files.insert(
+            "src/repo/user_repo.py".to_string(),
+            "def get_user(uid):\n    return {'id': uid, 'v': 2}\n".to_string(),
+        );
+        head_files.insert(
+            "src/services/user_service.py".to_string(),
+            "from src.repo import user_repo\ndef load_user(uid):\n    return user_repo.get_user(uid)\n".to_string(),
+        );
+        head_files.insert(
+            "tests/test_controller.py".to_string(),
+            "from src.services import user_service\ndef test_profile():\n    assert get_user(1) == {'id': 1, 'v': 2}\n".to_string(),
+        );
+
+        let diff = SemanticDiff::build(&base_files, &head_files).unwrap();
+        assert_eq!(diff.paired_tests.len(), 1);
+        let pair = &diff.paired_tests[0];
+
+        let scoped = ScopedImportLinker;
+        let scoped_verdict = scoped.check_linkage(&pair.base_test, &pair.head_test, &diff);
+        assert!(scoped_verdict.is_ambiguous());
+        assert!(scoped_verdict.evidence_or_reason().contains("user_service.py -> src/repo/user_repo.py"));
+    }
+
+    #[test]
+    fn test_scoped_linker_rejects_hub_module_transitive_bridge() {
+        let mut base_files = HashMap::new();
+        base_files.insert(
+            "src/repo/user_repo.py".to_string(),
+            "def get_user(uid):\n    return {'id': uid}\n".to_string(),
+        );
+        base_files.insert(
+            "src/constants.py".to_string(),
+            "from src.repo import user_repo\nTIMEOUT = 30\n".to_string(),
+        );
+        base_files.insert(
+            "tests/test_billing.py".to_string(),
+            "from src import constants\ndef test_charge():\n    assert get_user(1) == {'id': 1}\n".to_string(),
+        );
+
+        let mut head_files = HashMap::new();
+        head_files.insert(
+            "src/repo/user_repo.py".to_string(),
+            "def get_user(uid):\n    return {'id': uid, 'v': 2}\n".to_string(),
+        );
+        head_files.insert(
+            "src/constants.py".to_string(),
+            "from src.repo import user_repo\nTIMEOUT = 60\n".to_string(),
+        );
+        head_files.insert(
+            "tests/test_billing.py".to_string(),
+            "from src import constants\ndef test_charge():\n    assert get_user(1) == {'id': 1, 'v': 2}\n".to_string(),
+        );
+
+        let diff = SemanticDiff::build(&base_files, &head_files).unwrap();
+        assert_eq!(diff.paired_tests.len(), 1);
+        let pair = &diff.paired_tests[0];
+
+        let scoped = ScopedImportLinker;
+        let scoped_verdict = scoped.check_linkage(&pair.base_test, &pair.head_test, &diff);
+        // constants.py is a hub module, so it is blocked from acting as a transitive bridge!
+        assert!(!scoped_verdict.is_linked());
+        assert!(!scoped_verdict.is_ambiguous());
     }
 }
