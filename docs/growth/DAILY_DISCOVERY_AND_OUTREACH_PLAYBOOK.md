@@ -97,56 +97,81 @@ If the PR is still open, target the active reviewer commenting on the PR.
 
 ---
 
-## 📝 Finalized Email Templates (Pro & Human)
+## 📝 Finalized Email Templates (Pro, Human & Clear)
 
-Both templates are direct, courteous, cite the exact code hunk, and conclude with two professional context lines about `agent-proctor`.
+Both templates avoid compiler jargon (`AST lattice`, `symbol deprecation`, `zero-egress CLI`), focusing on plain-English code changes, the green CI discrepancy, and a polite two-line intro to Agent Proctor.
 
-### Template 1: For Merged Commits with Weakened Assertions
+### Template 1: For Merged Commits with Softened Assertions (e.g. `browser-use`)
 
 ```text
-Subject: {repo_name}@{commit_sha_short} weakened an assertion, CI stayed green
+Subject: {repo_name}@{commit_sha_short} — quick heads up on a test change
 
 Hey {first_name},
 
-Came across this commit on main while evaluating test suite diffs:
+Was taking a look at {repo_name} and noticed a small change in commit {commit_sha_short} ({file_path}):
 
-Commit: {commit_sha_short} ({file_path}:{line_number})
-Old: {old_assertion}
-New: {new_assertion}
+The test assertion went from checking for an exact value to a looser check:
+- Before: {old_assertion}
+- After:  {new_assertion}
 
-The assertion was softened, but pytest/coverage stayed 100% green on the run.
+Because CI and code coverage both stayed 100% green, it's the exact kind of test loosening that's really easy to miss in a busy review queue.
 
-You can reproduce the AST finding locally with zero network calls:
+If you're curious, you can see the local diff report with:
   cargo binstall agent-proctor
   proctor scan --base {base_sha} --head {head_sha}
 
-For context: I've been building agent-proctor (github.com/no-hup/agent-proctor) — an open-source, zero-egress Rust CLI that verifies PR test suite integrity so maintainers know when assertions are dropped or tests are weakened without breaking CI. If you find the project interesting, a star or feedback on our AST checks would mean a lot.
+For context: I'm building agent-proctor (github.com/no-hup/agent-proctor) — a free, open-source CLI and GitHub Action that alerts maintainers when a PR silently weakens assertions or drops tests behind green CI. If you find it interesting, I’d love your thoughts or a star on GitHub!
 
-No ask. I am not opening an unsolicited PR on your repo.
+No ask, and definitely not opening an unsolicited PR on your repo.
 
 Cheers,
 Shaurya
 https://github.com/no-hup/agent-proctor
 ```
 
-### Template 2: For Open PRs with Dropped Assertions or Config Loopholes
+### Template 2: For Open PRs with Dropped Assertions or Config Loopholes (e.g. `caput`)
 
 ```text
-Subject: {repo_name}#{pr_number} dropped assertions behind config ignore, CI stayed green
+Subject: {repo_name}#{pr_number} — dropped assertions in recent PR
 
 Hey {first_name},
 
-Noticed PR #{pr_number} on {repo_name}:
-Along with the {config_file} update, {assertion_count} assertions were dropped and {test_name} was removed in {file_path}. CI and lint checks passed green.
+Was looking at recent PRs on {repo_name} and noticed something in PR #{pr_number} that might have slipped past review:
 
-Reproduction with offline AST diff:
+Along with the {config_file} update, {assertion_count} assertions were removed and {test_name} was deleted in {file_path}. Since the linter and test suite both passed green, it's easy to miss that some test checks were actually dropped.
+
+You can inspect the diff report locally with:
+  cargo binstall agent-proctor
   proctor scan --base origin/main --head pull/{pr_number}/head
 
-For context: I've been building agent-proctor (github.com/no-hup/agent-proctor) — an open-source, zero-egress Rust CLI that verifies PR test suite integrity so maintainers know when assertions are dropped or tests are weakened without breaking CI. If you find the project interesting, a star or feedback on our AST checks would mean a lot.
+For context: I'm building agent-proctor (github.com/no-hup/agent-proctor) — a free, open-source CLI and GitHub Action that automatically catches when a PR drops assertions or deletes tests behind green CI.
 
-No ask. Just flagging the dropped checks in case it was unintentional.
+No pressure or unsolicited PR — just wanted to flag the dropped checks in case it was accidental! If you find the tool helpful, would love any thoughts or a star on GitHub.
 
 Best,
+Shaurya
+https://github.com/no-hup/agent-proctor
+```
+
+### Template 3: For Design Partners & High-Craft Maintainers (e.g. `pytest`, `uvicorn`, `caddy`)
+
+```text
+Subject: quick check on [repo] test diffs — feedback on edge cases
+
+Hey [first_name],
+
+I'm building an open-source tool called agent-proctor (github.com/no-hup/agent-proctor) that analyzes PR test diffs to catch weakened assertions or deleted tests before merge, without getting in the way of normal refactors.
+
+Since [repo] has one of the cleanest and most rigorous test suites out there, I ran a quick test scan across your last 50 merged test commits:
+- It stayed completely quiet on all valid refactors and test moves (0 false blocks).
+- Cleanly recognized [commit_sha] as a legitimate test update rather than a test weakening.
+
+I'd love your take on whether our detection logic makes sense or if you see edge cases where a tool like this would annoy maintainers:
+  cargo binstall agent-proctor && proctor scan --base main~50 --head main
+
+No ask for an install or PR — just looking for honest, technical feedback from maintainers who care deeply about test quality.
+
+Cheers,
 Shaurya
 https://github.com/no-hup/agent-proctor
 ```
