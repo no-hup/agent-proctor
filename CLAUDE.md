@@ -66,3 +66,68 @@ In your pull request description, you must:
 1. State the objective and reference the issue number (e.g. `Fixes #2`).
 2. Include the output of `git diff --stat`.
 3. Include the terminal output or explicit confirmation of the 5-point Pre-Flight Battery.
+
+---
+
+## 🤝 Antipode Community Delegation & Task Tracking
+
+We partner with [Antipode](https://github.com/eliorpom-cmd/antipode), an open community platform where external donors run Claude Code agents in sandboxed cloud sessions to solve open source tasks.
+
+### 🛡️ The Leaf-Node Delegation Invariant
+When posting requests to Antipode:
+- **ONLY delegate independent, leaf-level tasks:** e.g., adding a new language Tree-sitter parser (`crates/proctor-parse/src/<lang>.rs`) or a new runner adapter (`crates/proctor-probe/src/verify.rs`).
+- **NEVER delegate core critical logic:** Do NOT post tasks touching `crates/proctor-rules/` (anticheat rules `PROCTOR-001`..`008`), `crates/proctor-core/` (data models, finding types), diff linkage heuristics, or CI release workflows. Core engine logic must remain strictly maintained and vetted in-house.
+- **Enforce Zero-Network:** Every Antipode task must enforce `cargo test --test zero_network_verification` as an acceptance criterion.
+
+### 📌 Active Tasks & Queue
+
+| Task / Feature | Local Issue | Antipode Request | Status | Files in Scope |
+|---|---|---|---|---|
+| **Add `cargo-binstall` metadata** | [Issue #1](https://github.com/no-hup/agent-proctor/issues/1) | [Antipode #10](https://github.com/eliorpom-cmd/antipode/issues/10) | **Merged** ([PR #7](https://github.com/no-hup/agent-proctor/pull/7)) | `crates/proctor-cli/Cargo.toml` |
+| **Rust Tree-sitter Parser** (`#[test]`, `assert_eq!`) | [Issue #4](https://github.com/no-hup/agent-proctor/issues/4) | [Antipode #18](https://github.com/eliorpom-cmd/antipode/issues/18) | **Active** (Awaiting donor session) | `crates/proctor-parse/src/rust.rs` |
+| **`node:test` Runner Support** in Verify | [Issue #2](https://github.com/no-hup/agent-proctor/issues/2) | [Antipode #19](https://github.com/eliorpom-cmd/antipode/issues/19) | **Active** (Awaiting donor session) | `crates/proctor-probe/src/verify.rs` |
+| **Java JUnit 5 / AssertJ Parser** | [Issue #5](https://github.com/no-hup/agent-proctor/issues/5) | *Queue* (Post after #18 merges) | **Ready** | `crates/proctor-parse/src/java.rs` |
+| **Ruby RSpec / Minitest Parser** | [Issue #6](https://github.com/no-hup/agent-proctor/issues/6) | *Queue* (Post after #19 merges) | **Ready** | `crates/proctor-parse/src/ruby.rs` |
+
+### 📝 Antipode Request Template (For Future Tasks)
+Post new requests to `eliorpom-cmd/antipode` via `gh issue create --repo eliorpom-cmd/antipode`:
+```markdown
+### Repository
+no-hup/agent-proctor
+
+### Base branch
+main
+
+### Pitch
+Deterministic, zero-egress Git diff anticheat and test-integrity engine for autonomous AI coding agents.
+
+### Goal
+<Concise description of the leaf-node feature>
+
+### Success criteria
+- [ ] <AC 1>
+- [ ] cargo test -p <crate> and cargo test --workspace pass cleanly with zero warnings.
+- [ ] cargo test --test zero_network_verification passes.
+
+### Plan
+1. <Step 1>
+2. <Step 2>
+
+### Decisions
+- Only modify <target_file>. Do NOT touch proctor-rules, proctor-core, or CI.
+
+### Agent
+Claude Code
+
+### Model
+latest Sonnet, effort high
+
+### Size
+S (under 1 hour) or M (under 4 hours)
+
+### Type
+code
+
+### Off limits
+Do NOT touch crates/proctor-rules/, crates/proctor-core/, or CI workflows. Do not add any networking dependencies.
+```
