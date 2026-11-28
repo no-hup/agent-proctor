@@ -24,3 +24,25 @@ anyhow = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 tempfile = { workspace = true }
+
+# cargo-binstall: install precompiled release binaries with `cargo binstall agent-proctor`.
+# Assets are published by .github/workflows/release.yml on `v*` tags as
+# `proctor-{linux,darwin}-{x86_64,aarch64}.tar.gz`, each holding a single `proctor` binary
+# at the archive root (hence the explicit bin-dir). Asset names are not Rust target triples,
+# so each supported target gets its own pkg-url override.
+[package.metadata.binstall]
+pkg-url = "https://github.com/no-hup/agent-proctor/releases/download/v{ version }/proctor-linux-x86_64.tar.gz"
+bin-dir = "{ bin }{ binary-ext }"
+pkg-fmt = "tgz"
+
+[package.metadata.binstall.overrides.x86_64-unknown-linux-gnu]
+pkg-url = "https://github.com/no-hup/agent-proctor/releases/download/v{ version }/proctor-linux-x86_64.tar.gz"
+
+[package.metadata.binstall.overrides.aarch64-unknown-linux-gnu]
+pkg-url = "https://github.com/no-hup/agent-proctor/releases/download/v{ version }/proctor-linux-aarch64.tar.gz"
+
+[package.metadata.binstall.overrides.x86_64-apple-darwin]
+pkg-url = "https://github.com/no-hup/agent-proctor/releases/download/v{ version }/proctor-darwin-x86_64.tar.gz"
+
+[package.metadata.binstall.overrides.aarch64-apple-darwin]
+pkg-url = "https://github.com/no-hup/agent-proctor/releases/download/v{ version }/proctor-darwin-aarch64.tar.gz"
