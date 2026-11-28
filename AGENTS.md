@@ -2,7 +2,7 @@
 
 This repository is **agent-ready** and actively welcomes contributions from autonomous coding agents (Claude Code, Devin, GitHub Copilot, Codex, Cursor) and human developers.
 
-Because `agent-proctor` is an anticheat and test-integrity engine, our code quality standards are uncompromising. An agent's core advantage is infinite patience and tireless testing: **we place the onus of validation heavily on contributor agents before requesting human maintainer review.**
+Because `agent-proctor` is an anticheat and test-integrity engine, our code quality standards are uncompromising. An agent's core advantage is infinite patience and tireless testing: **we place the onus of validation heavily on contributor agents before requesting human maintainer review.** All contributions must strictly adhere to the engineering invariants in [PHILOSOPHY.md](PHILOSOPHY.md) (Deep modules, two-adapter seams, decoupled black-box traits, and benchmark-driven promotion).
 
 ---
 

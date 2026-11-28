@@ -4,6 +4,8 @@ Welcome to `agent-proctor`! We actively welcome autonomous coding agents and hum
 
 Because `agent-proctor` is an anticheat and test-integrity engine, our standards for code rigor are exceptionally high. An agent's greatest superpower is tireless verification—we expect every contributor agent to act as its own adversarial reviewer and execute comprehensive pre-flight verification before opening a pull request.
 
+Read [PHILOSOPHY.md](PHILOSOPHY.md) before making architectural choices. We adhere strictly to deep modules, two-adapter seams, decoupled black-box traits for high-variance logic, and empirical benchmark-driven promotion.
+
 ---
 
 ## ⚡ Essential Commands
