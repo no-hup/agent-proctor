@@ -8,9 +8,13 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
+mod escalator;
 mod git;
 mod reporter;
 mod sarif;
+
+use escalator::{AnnotatorEscalator, EraserEscalator, EscalatorStrategy};
+use proctor_core::WaiverStore;
 
 #[derive(Parser)]
 #[command(
@@ -57,6 +61,14 @@ struct Cli {
     /// Policy mode (for agent loops/evals): treat pre-existing assertions on base as immutable
     #[arg(long)]
     protect_existing_tests: bool,
+
+    /// Code-to-test linkage strategy (scoped or bare)
+    #[arg(long, value_enum, default_value_t = CliLinkageMode::Scoped)]
+    linkage: CliLinkageMode,
+
+    /// Strategy for dynamic escalation (annotate findings or erase them)
+    #[arg(long, value_enum, default_value_t = CliEscalatorMode::Annotate)]
+    escalator_mode: CliEscalatorMode,
 }
 
 #[derive(Subcommand)]
@@ -96,6 +108,14 @@ enum Commands {
         /// Policy mode (for agent loops/evals): treat pre-existing assertions on base as immutable
         #[arg(long)]
         protect_existing_tests: bool,
+
+        /// Code-to-test linkage strategy (scoped or bare)
+        #[arg(long, value_enum, default_value_t = CliLinkageMode::Scoped)]
+        linkage: CliLinkageMode,
+
+        /// Strategy for dynamic escalation (annotate findings or erase them)
+        #[arg(long, value_enum, default_value_t = CliEscalatorMode::Annotate)]
+        escalator_mode: CliEscalatorMode,
     },
     /// Dynamically verify that added/modified tests catch regressions by executing them on the base code
     Verify {
@@ -192,6 +212,29 @@ impl From<CliRunnerType> for proctor_probe::RunnerType {
     }
 }
 
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum, Debug, Default)]
+pub enum CliLinkageMode {
+    #[default]
+    Scoped,
+    Bare,
+}
+
+impl From<CliLinkageMode> for proctor_core::LinkageMode {
+    fn from(c: CliLinkageMode) -> Self {
+        match c {
+            CliLinkageMode::Scoped => proctor_core::LinkageMode::Scoped,
+            CliLinkageMode::Bare => proctor_core::LinkageMode::Bare,
+        }
+    }
+}
+
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum, Debug, Default)]
+pub enum CliEscalatorMode {
+    #[default]
+    Annotate,
+    Erase,
+}
+
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum, Debug)]
 enum OutputFormat {
     Pretty,
@@ -224,6 +267,8 @@ fn main() -> Result<()> {
             receipt,
             escalate,
             protect_existing_tests,
+            linkage,
+            escalator_mode,
         }) => run_scan(
             &base,
             head.as_deref(),
@@ -235,6 +280,8 @@ fn main() -> Result<()> {
             receipt,
             escalate,
             protect_existing_tests,
+            linkage,
+            escalator_mode,
         ),
         Some(Commands::Verify {
             base,
@@ -284,6 +331,8 @@ fn main() -> Result<()> {
             cli.receipt,
             cli.escalate,
             cli.protect_existing_tests,
+            cli.linkage,
+            cli.escalator_mode,
         ),
     }
 }
@@ -300,6 +349,8 @@ fn run_scan(
     receipt_path: Option<PathBuf>,
     escalate: bool,
     protect_existing_tests: bool,
+    linkage: CliLinkageMode,
+    escalator_mode: CliEscalatorMode,
 ) -> Result<()> {
     // 1. Immutably anchor policy to the base ref
     let mut policy = git::load_policy_from_base(base);
@@ -309,6 +360,7 @@ fn run_scan(
     if protect_existing_tests {
         policy.protect_existing_tests = true;
     }
+    policy.linkage_mode = linkage.into();
 
     // 2. Get changed files from git using two-dot diff
     let mut changed = match git::get_changed_files(base, head) {
@@ -353,25 +405,14 @@ fn run_scan(
         .map_err(|e| anyhow::anyhow!("Semantic diff failed: {}", e))?;
 
     // 4. Configure verified waivers & acks
-    // Waivers are strictly CI-only: no local CLI flag exists.
-    // Env-based waivers are strictly parsed in CI when GITHUB_ACTIONS is present.
-    let mut waiver_set = proctor_core::WaiverSet::default();
-    if std::env::var("GITHUB_ACTIONS").is_ok() {
-        if let Ok(env_waivers) = std::env::var("PROCTOR_VERIFIED_WAIVERS") {
-            if let Ok(parsed_set) = serde_json::from_str::<proctor_core::WaiverSet>(&env_waivers) {
-                waiver_set
-                    .maintainer_waivers
-                    .extend(parsed_set.maintainer_waivers);
-                waiver_set.author_acks.extend(parsed_set.author_acks);
-            } else {
-                for w in env_waivers.split(',') {
-                    let trimmed = w.trim();
-                    if !trimmed.is_empty() {
-                        waiver_set.maintainer_waivers.insert(trimmed.to_string());
-                    }
-                }
-            }
-        }
+    // In-tree waiver store: .proctor/waivers.toml
+    let mut waiver_set = proctor_core::InTreeWaiverStore::new(Path::new(".")).load_waivers();
+
+    // Env-based waivers are strictly parsed in CI when GITHUB_ACTIONS is present or env set.
+    if std::env::var("GITHUB_ACTIONS").is_ok() || std::env::var("PROCTOR_VERIFIED_WAIVERS").is_ok() {
+        let env_set = proctor_core::EnvWaiverStore.load_waivers();
+        waiver_set.maintainer_waivers.extend(env_set.maintainer_waivers);
+        waiver_set.author_acks.extend(env_set.author_acks);
     }
 
     // 5. Evaluate rules
@@ -427,7 +468,11 @@ fn run_scan(
 
     // 5d. Smart Escalator: targeted dynamic verification for ambiguous test modifications
     if escalate {
-        run_smart_escalator(&diff, &mut findings, base, head);
+        let escalator: Box<dyn EscalatorStrategy> = match escalator_mode {
+            CliEscalatorMode::Annotate => Box::new(AnnotatorEscalator),
+            CliEscalatorMode::Erase => Box::new(EraserEscalator),
+        };
+        run_smart_escalator(&diff, &mut findings, base, head, escalator.as_ref());
     }
 
     // 6. Generate SARIF if requested
@@ -565,6 +610,7 @@ fn run_smart_escalator(
     findings: &mut Vec<proctor_core::Finding>,
     base_ref: &str,
     head_ref: Option<&str>,
+    strategy: &dyn EscalatorStrategy,
 ) {
     let ambiguous_files: std::collections::BTreeSet<String> = findings
         .iter()
@@ -611,68 +657,7 @@ fn run_smart_escalator(
     ) {
         Ok(results) => {
             for res in results {
-                match res.status {
-                    proctor_probe::VerificationStatus::Discriminating { reason } => {
-                        eprintln!(
-                            "proctor: Escalator verified test '{}' is discriminating against base: {}",
-                            res.test_id, reason
-                        );
-                        findings.retain(|f| {
-                            !(f.file_path == res.test_file
-                                && f.rule_id == RuleId::AssertionLock
-                                && matches!(f.verdict, Verdict::Review { .. }))
-                        });
-                    }
-                    proctor_probe::VerificationStatus::DoesNotDiscriminate => {
-                        eprintln!(
-                            "proctor: Escalator verified test '{}' does NOT discriminate against base logic!",
-                            res.test_id
-                        );
-                        for f in findings.iter_mut() {
-                            if f.file_path == res.test_file && f.rule_id == RuleId::AssertionLock {
-                                f.tier = RuleTier::Guard;
-                                f.verdict = Verdict::Block {
-                                    rule: RuleId::AssertionLock,
-                                    evidence: format!(
-                                        "Escalator: Test '{}' passes on base without exercising changed logic; assertion weakening is vacuous.",
-                                        res.test_id
-                                    ),
-                                };
-                                f.message = format!(
-                                    "Dynamic probe confirmed assertion change in '{}' is vacuous and does not discriminate against base.",
-                                    res.test_id
-                                );
-                            }
-                        }
-                    }
-                    proctor_probe::VerificationStatus::Broken { error } => {
-                        eprintln!(
-                            "proctor: Escalator test '{}' is broken on head: {}",
-                            res.test_id, error
-                        );
-                        for f in findings.iter_mut() {
-                            if f.file_path == res.test_file && f.rule_id == RuleId::AssertionLock {
-                                f.tier = RuleTier::Guard;
-                                f.verdict = Verdict::Block {
-                                    rule: RuleId::AssertionLock,
-                                    evidence: format!("Escalator: Test is broken on head commit: {}", error),
-                                };
-                            }
-                        }
-                    }
-                    proctor_probe::VerificationStatus::MissingOnBase { error } => {
-                        eprintln!(
-                            "proctor: Escalator test '{}' references symbols missing on base: {}",
-                            res.test_id, error
-                        );
-                    }
-                    proctor_probe::VerificationStatus::Inconclusive { reason } => {
-                        eprintln!(
-                            "proctor: Escalator probe inconclusive for '{}' ({}); preserving static review.",
-                            res.test_id, reason
-                        );
-                    }
-                }
+                strategy.apply_verification(findings, &res);
             }
         }
         Err(e) => {

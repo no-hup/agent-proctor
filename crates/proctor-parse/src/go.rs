@@ -508,10 +508,15 @@ fn extract_table_driven_rows(
         for child in body.children(cursor) {
             // Elements in literal_value: literal_element or keyed_element
             if child.kind() == "literal_element" || child.kind() == "keyed_element" {
-                let row_text = node_text(child, source);
-                let normalized: String = row_text.split_whitespace().collect::<Vec<_>>().join(" ");
-                if normalized.len() > 2 {
-                    let hash_bytes = blake3::hash(normalized.as_bytes());
+                let identity = if let Some(name_str) = extract_name_field(child, source) {
+                    format!("name:{}", name_str)
+                } else {
+                    let row_text = node_text(child, source);
+                    row_text.split_whitespace().collect::<Vec<_>>().join(" ")
+                };
+
+                if identity.len() > 2 {
+                    let hash_bytes = blake3::hash(identity.as_bytes());
                     let mut hash_buf = [0u8; 8];
                     hash_buf.copy_from_slice(&hash_bytes.as_bytes()[..8]);
                     let hash_u64 = u64::from_le_bytes(hash_buf);
@@ -520,6 +525,27 @@ fn extract_table_driven_rows(
             }
         }
     }
+}
+
+fn extract_name_field(node: Node, source: &str) -> Option<String> {
+    let cursor = &mut node.walk();
+    for child in node.children(cursor) {
+        if child.kind() == "keyed_element" && child.child_count() >= 2 {
+            if let (Some(k), Some(v)) = (child.child(0), child.child(1)) {
+                let key_text = node_text(k, source).trim().to_string();
+                if key_text == "name" || key_text == "Name" || key_text == "desc" || key_text == "testName" {
+                    let val_text = node_text(v, source);
+                    return Some(val_text.trim().trim_matches('"').trim_matches('`').to_string());
+                }
+            }
+        }
+        if child.kind() == "composite_literal" || child.kind() == "literal_value" || child.kind() == "literal_element" {
+            if let Some(found) = extract_name_field(child, source) {
+                return Some(found);
+            }
+        }
+    }
+    None
 }
 
 fn node_text(node: Node, source: &str) -> String {
@@ -638,6 +664,33 @@ func TestAddTable(t *testing.T) {
         // assert.Equal call inside
         assert_eq!(test.assertions.len(), 1);
         assert_eq!(test.assertions[0].strength, AssertionStrength::Exact);
+
+        // Prove that adding a new field (e.g. timeout: 5) does NOT change row hashes because name is preserved
+        let code_with_extra_field = r#"
+package calc
+
+func TestAddTable(t *testing.T) {
+    tests := []struct {
+        name string
+        a, b int
+        want int
+        timeout int
+    }{
+        {name: "positive", a: 1, b: 2, want: 3, timeout: 5},
+        {name: "negative", a: -1, b: -2, want: -3, timeout: 10},
+        {name: "zero", a: 0, b: 0, want: 0, timeout: 2},
+    }
+
+    for _, tc := range tests {
+        t.Run(tc.name, func(t *testing.T) {
+            got := Add(tc.a, tc.b)
+            assert.Equal(t, tc.want, got)
+        })
+    }
+}
+"#;
+        let parsed_extra = parse_go_test_file("calc_test.go", code_with_extra_field).unwrap();
+        assert_eq!(parsed_extra.tests[0].parametrized_hashes, test.parametrized_hashes);
     }
 
     #[test]

@@ -1,0 +1,27 @@
+{
+  "total_commits": 500,
+  "avg_bare_ms": 189.5824530934915,
+  "avg_scoped_ms": 187.3458989073988,
+  "bare_verdicts": {
+    "pass": 461,
+    "block": 35,
+    "review": 4
+  },
+  "scoped_verdicts": {
+    "pass": 461,
+    "block": 36,
+    "review": 3
+  },
+  "bare_findings_count": 93,
+  "scoped_findings_count": 93,
+  "discrepancies": [
+    {
+      "repo": "browser-use",
+      "sha": "84a1cc1951b688e9b10fb9f66344f11f659d689a",
+      "bare_status": "review",
+      "scoped_status": "block",
+      "bare_findings": 1,
+      "scoped_findings": 1
+    }
+  ]
+}

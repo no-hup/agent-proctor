@@ -6,6 +6,9 @@ use proctor_parse::{
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
+pub mod linkage;
+pub use linkage::*;
+
 /// A paired test between the base commit and head commit.
 #[derive(Debug, Clone)]
 pub struct TestPair {
@@ -33,6 +36,7 @@ pub struct SemanticDiff {
     pub head_harness_mocks: Vec<proctor_parse::ParsedMock>,
     pub base_fixture_skips: Vec<(String, String)>,
     pub head_fixture_skips: Vec<(String, String)>,
+    pub test_imports: HashMap<String, Vec<String>>,
     pub parse_errors: Vec<(String, String)>,
 }
 
@@ -154,10 +158,12 @@ impl SemanticDiff {
             .collect();
 
         // 4. Two-Pass Test Pairing
+        let mut test_imports = HashMap::new();
         let mut all_base_tests = Vec::new();
         let mut base_harness_mocks = Vec::new();
         let mut base_fixture_skips = Vec::new();
         for (path, f) in base_tests_by_file {
+            test_imports.insert(path.clone(), f.imports.clone());
             all_base_tests.extend(f.tests);
             base_harness_mocks.extend(f.harness_mocks);
             for fn_name in f.fixture_skips {
@@ -169,6 +175,7 @@ impl SemanticDiff {
         let mut head_harness_mocks = Vec::new();
         let mut head_fixture_skips = Vec::new();
         for (path, f) in head_tests_by_file {
+            test_imports.insert(path.clone(), f.imports.clone());
             all_head_tests.extend(f.tests);
             head_harness_mocks.extend(f.harness_mocks);
             for fn_name in f.fixture_skips {
@@ -292,6 +299,7 @@ impl SemanticDiff {
             head_harness_mocks,
             base_fixture_skips,
             head_fixture_skips,
+            test_imports,
             parse_errors,
         })
     }
@@ -330,12 +338,19 @@ impl SemanticDiff {
         })
     }
 
+    /// Evaluates linkage using an explicit LinkageStrategy black box.
+    pub fn test_links_changed_code_with(
+        &self,
+        base: &ParsedTest,
+        head: &ParsedTest,
+        strategy: &dyn LinkageStrategy,
+    ) -> LinkageVerdict {
+        strategy.check_linkage(base, head, self)
+    }
+
     /// True if the test (before or after the PR) references a production definition changed in this PR.
     pub fn test_links_changed_code(&self, base: &ParsedTest, head: &ParsedTest) -> bool {
-        base.body_symbols
-            .iter()
-            .chain(head.body_symbols.iter())
-            .any(|sym| self.changed_symbols.contains(sym))
+        self.test_links_changed_code_with(base, head, &BareTokenLinker).is_linked()
     }
 }
 

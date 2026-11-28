@@ -236,6 +236,83 @@ impl From<std::collections::HashSet<String>> for WaiverSet {
     }
 }
 
+/// Abstract trait representing a waiver provider.
+pub trait WaiverStore: Send + Sync {
+    fn load_waivers(&self) -> WaiverSet;
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct InTreeWaiverConfig {
+    #[serde(default, alias = "waiver")]
+    pub waivers: Vec<InTreeWaiverEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InTreeWaiverEntry {
+    pub id: String,
+    #[serde(default)]
+    pub rule: Option<String>,
+    #[serde(default)]
+    pub reason: Option<String>,
+    #[serde(default)]
+    pub author: Option<String>,
+}
+
+/// In-tree committed waiver store reading `.proctor/waivers.toml`.
+#[derive(Debug, Clone)]
+pub struct InTreeWaiverStore {
+    pub repo_root: std::path::PathBuf,
+}
+
+impl InTreeWaiverStore {
+    pub fn new(repo_root: impl Into<std::path::PathBuf>) -> Self {
+        Self {
+            repo_root: repo_root.into(),
+        }
+    }
+}
+
+impl WaiverStore for InTreeWaiverStore {
+    fn load_waivers(&self) -> WaiverSet {
+        let mut set = WaiverSet::default();
+        let waiver_path = self.repo_root.join(".proctor").join("waivers.toml");
+        if waiver_path.exists() {
+            if let Ok(content) = std::fs::read_to_string(&waiver_path) {
+                if let Ok(cfg) = toml::from_str::<InTreeWaiverConfig>(&content) {
+                    for entry in cfg.waivers {
+                        set.maintainer_waivers.insert(entry.id);
+                    }
+                }
+            }
+        }
+        set
+    }
+}
+
+/// Environment-based waiver store reading `PROCTOR_VERIFIED_WAIVERS`.
+#[derive(Debug, Clone, Default)]
+pub struct EnvWaiverStore;
+
+impl WaiverStore for EnvWaiverStore {
+    fn load_waivers(&self) -> WaiverSet {
+        let mut set = WaiverSet::default();
+        if let Ok(env_waivers) = std::env::var("PROCTOR_VERIFIED_WAIVERS") {
+            if let Ok(parsed_set) = serde_json::from_str::<WaiverSet>(&env_waivers) {
+                set.maintainer_waivers.extend(parsed_set.maintainer_waivers);
+                set.author_acks.extend(parsed_set.author_acks);
+            } else {
+                for w in env_waivers.split(',') {
+                    let trimmed = w.trim();
+                    if !trimmed.is_empty() {
+                        set.maintainer_waivers.insert(trimmed.to_string());
+                    }
+                }
+            }
+        }
+        set
+    }
+}
+
 /// Structured JSON scan report format.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScanReport {
@@ -263,6 +340,16 @@ pub struct Policy {
     /// as the immutable spec: any non-orphaned modification or deletion becomes Guard.
     #[serde(default)]
     pub protect_existing_tests: bool,
+    #[serde(default)]
+    pub linkage_mode: LinkageMode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum LinkageMode {
+    #[default]
+    Bare,
+    Scoped,
 }
 
 fn default_true() -> bool {
@@ -287,6 +374,7 @@ impl Default for Policy {
             skip_demote_to_review: true,
             review_mode: ReviewMode::default(),
             protect_existing_tests: false,
+            linkage_mode: LinkageMode::default(),
         }
     }
 }

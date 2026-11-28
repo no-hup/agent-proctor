@@ -225,7 +225,12 @@ fn evaluate_assertion_lock(diff: &SemanticDiff, policy: &Policy, findings: &mut 
 
         // 1a(ii). Check for modified, weakened, guard-wrapped, or deleted assertions via AssertionStrength lattice
         let has_production_changes = !diff.head_sources.is_empty() || !diff.base_sources.is_empty();
-        let linked = diff.test_links_changed_code(base_test, head_test);
+        let linkage_strategy: Box<dyn proctor_diff::LinkageStrategy> = match policy.linkage_mode {
+            proctor_core::LinkageMode::Bare => Box::new(proctor_diff::BareTokenLinker),
+            proctor_core::LinkageMode::Scoped => Box::new(proctor_diff::ScopedImportLinker),
+        };
+        let linkage_verdict = diff.test_links_changed_code_with(base_test, head_test, linkage_strategy.as_ref());
+        let linked = linkage_verdict.is_linked();
 
         for base_assert in &base_test.assertions {
             // A test that only follows a production rename is not a modification.
