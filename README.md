@@ -25,7 +25,7 @@ cargo binstall agent-proctor
 ### Build from source with Cargo
 
 ```bash
-cargo install --git https://github.com/no-hup/agent-proctor proctor-cli
+cargo install --git https://github.com/no-hup/agent-proctor agent-proctor --bin proctor --locked
 ```
 
 ### Observe Mode in GitHub Actions (posts PR receipts without failing CI)

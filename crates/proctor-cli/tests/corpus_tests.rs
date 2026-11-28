@@ -78,14 +78,6 @@ fn test_corpus_fixtures_match_expected_verdicts() {
         let expected: serde_json::Value = serde_json::from_str(&expected_json_str)
             .unwrap_or_else(|_| panic!("Malformed expected.json in {}", case_dir.display()));
 
-        // Go fixtures are documented for Phase 2 Tree-sitter Go integration
-        if expected.get("language").and_then(|v| v.as_str()) == Some("go") {
-            assert!(case_dir.join("base_test.go").exists());
-            assert!(case_dir.join("head_test.go").exists());
-            assert_eq!(expected["rule_id"].as_str().unwrap(), "PROCTOR-006");
-            continue;
-        }
-
         let expected_verdict_str = expected["verdict"].as_str().unwrap();
 
         let mut base_files = HashMap::new();
@@ -113,7 +105,15 @@ fn test_corpus_fixtures_match_expected_verdicts() {
             head_files.insert("tests/auth.test.js".to_string(), head_test);
         }
 
-        // 3. Check CI workflow files
+        // 3. Check Go test files
+        if case_dir.join("base_test.go").exists() {
+            let base_test = fs::read_to_string(case_dir.join("base_test.go")).unwrap();
+            let head_test = fs::read_to_string(case_dir.join("head_test.go")).unwrap();
+            base_files.insert("math_test.go".to_string(), base_test);
+            head_files.insert("math_test.go".to_string(), head_test);
+        }
+
+        // 4. Check CI workflow files
         if case_dir.join("base.yml").exists() {
             let base_yml = fs::read_to_string(case_dir.join("base.yml")).unwrap();
             let head_yml = fs::read_to_string(case_dir.join("head.yml")).unwrap();

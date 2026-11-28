@@ -31,9 +31,9 @@ tempfile = { workspace = true }
 # at the archive root (hence the explicit bin-dir). Asset names are not Rust target triples,
 # so each supported target gets its own pkg-url override.
 [package.metadata.binstall]
-pkg-url = "https://github.com/no-hup/agent-proctor/releases/download/v{ version }/proctor-linux-x86_64.tar.gz"
 bin-dir = "{ bin }{ binary-ext }"
 pkg-fmt = "tgz"
+disabled-strategies = ["quick-install"]
 
 [package.metadata.binstall.overrides.x86_64-unknown-linux-gnu]
 pkg-url = "https://github.com/no-hup/agent-proctor/releases/download/v{ version }/proctor-linux-x86_64.tar.gz"
